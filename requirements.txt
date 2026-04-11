@@ -1,0 +1,16 @@
+spacy>=3.7,<4.0
+networkx>=3.2
+python-louvain>=0.16
+scikit-learn>=1.4
+rake-nltk>=1.0.6
+pdfplumber>=0.11
+pandas>=2.1
+matplotlib>=3.8
+seaborn>=0.13
+pyvis>=0.3.2
+textblob>=0.18
+vaderSentiment>=3.3.2
+streamlit>=1.30
+jupyter>=1.0
+nbformat>=5.9
+PyYAML>=6.0

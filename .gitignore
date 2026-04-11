@@ -1,0 +1,45 @@
+# Excluded from public repo (per project preference)
+papers/
+project_brief/
+Research_Ethics/
+
+# Virtual environment — never commit (includes large site-packages e.g. Altair datasets)
+venv/
+.venv/
+env/
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated outputs (regenerate with pipeline.py)
+results/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Large local data (see data/README.md for how to obtain files)
+data/Yelp Photos/
+data/**/*.tar
+data/**/*.tar.gz
+# Yelp academic JSONL exports are large; place locally after download
+data/Yelp JSON/yelp_dataset/*.json

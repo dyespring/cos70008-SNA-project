@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Text-to-Network Engine — Pipeline Documentation</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --accent: #4363d8;
+    --yelp: #e6194b;
+    --both: #3cb44b;
+    --card-bg: #f8f9fc;
+    --border: #e0e4ec;
+    --code-bg: #f0f2f6;
+    --stage1: #4363d8;
+    --stage2: #7b61ff;
+    --stage3: #e6194b;
+    --stage4: #f58231;
+    --stage5: #3cb44b;
+    --stage6: #42d4f4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+  h1 { font-size: 2.2rem; margin-bottom: 0.3rem; }
+  h1 span { color: var(--accent); }
+  .subtitle { color: #666; font-size: 1.1rem; margin-bottom: 2rem; }
+  h2 {
+    font-size: 1.5rem;
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.15rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+  p, li { margin-bottom: 0.6rem; }
+  ul { padding-left: 1.5rem; }
+  code {
+    background: var(--code-bg);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  pre {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 1rem 1.2rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.88rem;
+    line-height: 1.6;
+    margin: 1rem 0;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0;
+  }
+  .card h3 { margin-top: 0; }
+
+  .stage-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  @media (max-width: 700px) { .stage-grid { grid-template-columns: 1fr; } }
+
+  .stage-card {
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+    border-left: 5px solid;
+    background: var(--card-bg);
+  }
+  .stage-card h3 { margin-top: 0; font-size: 1.05rem; }
+  .stage-card .num {
+    display: inline-block;
+    width: 28px; height: 28px;
+    line-height: 28px;
+    text-align: center;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-right: 0.4rem;
+  }
+  .s1 { border-color: var(--stage1); }  .s1 .num { background: var(--stage1); }
+  .s2 { border-color: var(--stage2); }  .s2 .num { background: var(--stage2); }
+  .s3 { border-color: var(--stage3); }  .s3 .num { background: var(--stage3); }
+  .s4 { border-color: var(--stage4); }  .s4 .num { background: var(--stage4); }
+  .s5 { border-color: var(--stage5); }  .s5 .num { background: var(--stage5); }
+  .s6 { border-color: var(--stage6); }  .s6 .num { background: var(--stage6); }
+
+  .mermaid { margin: 1.5rem 0; text-align: center; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  th { background: var(--card-bg); font-weight: 600; }
+  tr:nth-child(even) { background: #fafbfd; }
+
+  .tag {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #fff;
+  }
+  .tag-policy { background: var(--accent); }
+  .tag-yelp   { background: var(--yelp); }
+  .tag-both   { background: var(--both); }
+
+  .toc { margin: 1.5rem 0; }
+  .toc a { text-decoration: none; color: var(--accent); }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin-bottom: 0.3rem; }
+
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif !important; }
+</style>
+</head>
+<body>
+
+<h1>Text-to-Network Engine — <span>Pipeline Documentation</span></h1>
+<p class="subtitle">Technical reference for <code>pipeline.py</code> and the <code>src/</code> module architecture</p>
+
+<!-- ───── TABLE OF CONTENTS ───── -->
+<div class="card toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#overview">Architecture Overview</a></li>
+    <li><a href="#data-flow">End-to-End Data Flow</a></li>
+    <li><a href="#stages">Pipeline Stages (1–6)</a></li>
+    <li><a href="#modules">Module Reference</a></li>
+    <li><a href="#combined">Combined Mode &amp; Cross-Source Analysis</a></li>
+    <li><a href="#cli">CLI Arguments</a></li>
+    <li><a href="#outputs">Output Files</a></li>
+    <li><a href="#usage">Usage Examples</a></li>
+  </ol>
+</div>
+
+<!-- ───── 1. ARCHITECTURE OVERVIEW ───── -->
+<h2 id="overview">1. Architecture Overview</h2>
+<p>The pipeline transforms <strong>unstructured text</strong> (PDF policy documents + Yelp JSON reviews) into a
+<strong>conceptual network</strong> where nodes are key concepts and edges are semantic relationships.
+It then applies social network analysis (SNA) techniques to extract insights.</p>
+
+<div class="mermaid">
+graph TB
+    subgraph Input["📄 Data Sources"]
+        PDF["Policy PDF<br/><small>Climate Resilience Strategy</small>"]
+        YELP["Yelp JSONL<br/><small>Restaurant Reviews</small>"]
+    end
+
+    subgraph Pipeline["⚙️ pipeline.py"]
+        S1["Stage 1<br/>Ingestion"]
+        S2["Stage 2<br/>Preprocessing"]
+        S3["Stage 3<br/>Extraction"]
+        S4["Stage 4<br/>Network Construction"]
+        S5["Stage 5<br/>Analysis"]
+        S6["Stage 6<br/>Visualisation"]
+    end
+
+    subgraph Output["📊 Results"]
+        CSV["CSV Files"]
+        GRAPHML["GraphML"]
+        PNG["PNG Charts"]
+        HTML["Interactive HTML"]
+        JSON["JSON Summary"]
+    end
+
+    PDF --> S1
+    YELP --> S1
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+    S5 --> CSV
+    S4 --> GRAPHML
+    S6 --> PNG
+    S6 --> HTML
+    S5 --> JSON
+
+    style Input fill:#e8f0fe,stroke:#4363d8,color:#1a1a2e
+    style Pipeline fill:#fff3e0,stroke:#f58231,color:#1a1a2e
+    style Output fill:#e8f5e9,stroke:#3cb44b,color:#1a1a2e
+</div>
+
+<!-- ───── 2. DATA FLOW ───── -->
+<h2 id="data-flow">2. End-to-End Data Flow</h2>
+<p>This diagram shows the detailed data transformations at each stage, including the intermediate data structures passed between modules.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph Ingest["Stage 1: Ingest"]
+        A1["pdf_reader<br/><small>pdfplumber</small>"] --> A2["pages: list of<br/>(page_num, text)"]
+        A3["yelp_reader<br/><small>pandas + json</small>"] --> A4["DataFrame<br/>(review_id, text, stars)"]
+    end
+
+    subgraph Preprocess["Stage 2: Preprocess"]
+        B1["cleaner<br/><small>clean_text()</small>"]
+        B2["SpacyTokeniser<br/><small>spaCy NLP</small>"]
+        B1 --> B2
+        B2 --> B3["ProcessedDocument[]<br/><small>sentences, lemmas,<br/>entities, noun_chunks,<br/>source tag</small>"]
+    end
+
+    subgraph Extract["Stage 3: Extract"]
+        C1["ConceptExtractor<br/><small>NER + NP + TF-IDF</small>"]
+        C2["RelationshipExtractor<br/><small>co-occurrence +<br/>dependency parsing</small>"]
+        C1 --> C3["Concept[]<br/><small>label, type, freq,<br/>source_origins</small>"]
+        C2 --> C4["Relationship[]<br/><small>src, tgt, weight,<br/>type, directed</small>"]
+    end
+
+    subgraph Build["Stage 4: Build"]
+        D1["GraphBuilder<br/><small>NetworkX DiGraph</small>"]
+        D1 --> D2["DiGraph<br/><small>nodes + edges<br/>with attributes</small>"]
+    end
+
+    subgraph Analyse["Stage 5: Analyse"]
+        E1["GraphAnalyser"]
+        E1 --> E2["Centralities<br/>Communities<br/>Brokers<br/>Cross-source"]
+    end
+
+    subgraph Visualise["Stage 6: Visualise"]
+        F1["StaticVisualiser<br/><small>matplotlib</small>"]
+        F2["InteractiveVisualiser<br/><small>pyvis</small>"]
+    end
+
+    A2 --> B1
+    A4 --> B1
+    B3 --> C1
+    B3 --> C2
+    C3 --> D1
+    C4 --> D1
+    D2 --> E1
+    D2 --> F1
+    D2 --> F2
+
+    style Ingest fill:#e8f0fe,stroke:#4363d8
+    style Preprocess fill:#f3e8ff,stroke:#7b61ff
+    style Extract fill:#fee8e8,stroke:#e6194b
+    style Build fill:#fff3e0,stroke:#f58231
+    style Analyse fill:#e8f5e9,stroke:#3cb44b
+    style Visualise fill:#e0f7fa,stroke:#42d4f4
+</div>
+
+<!-- ───── 3. PIPELINE STAGES ───── -->
+<h2 id="stages">3. Pipeline Stages (1–6)</h2>
+
+<div class="stage-grid">
+
+<div class="stage-card s1">
+  <h3><span class="num">1</span> Ingestion</h3>
+  <p><strong>Lines 26–59</strong> in <code>pipeline.py</code></p>
+  <ul>
+    <li><strong>Policy:</strong> <code>pdf_reader.read_policy_pdf()</code> extracts text per page using <code>pdfplumber</code>, strips headers/footers</li>
+    <li><strong>Yelp:</strong> <code>yelp_reader.load_yelp_reviews()</code> reads extracted JSONL, filters by category, samples N reviews</li>
+    <li><strong>Combined:</strong> both are loaded into the same document list</li>
+  </ul>
+</div>
+
+<div class="stage-card s2">
+  <h3><span class="num">2</span> Preprocessing</h3>
+  <p><strong>Lines 61–64</strong> (summary), cleaning + tokenisation happen during ingestion</p>
+  <ul>
+    <li><code>clean_text()</code> — removes URLs, emails, Unicode artefacts, policy-specific noise</li>
+    <li><code>SpacyTokeniser</code> — tokenises, lemmatises, tags POS, extracts NER entities &amp; noun chunks</li>
+    <li>Each document gets a <code>source</code> tag (<code>"policy"</code> or <code>"yelp"</code>)</li>
+  </ul>
+</div>
+
+<div class="stage-card s3">
+  <h3><span class="num">3</span> Extraction</h3>
+  <p><strong>Lines 66–84</strong></p>
+  <ul>
+    <li><strong>ConceptExtractor</strong> — 3 strategies: Named Entity Recognition, Noun-Phrase chunking, TF-IDF keywords</li>
+    <li>Each concept tracks <code>source_origins</code> → knows if it came from policy, yelp, or both</li>
+    <li><strong>RelationshipExtractor</strong> — co-occurrence windows + dependency parsing; classifies as ASSOCIATION / ACTION / CAUSATION</li>
+  </ul>
+</div>
+
+<div class="stage-card s4">
+  <h3><span class="num">4</span> Network Construction</h3>
+  <p><strong>Lines 86–96</strong></p>
+  <ul>
+    <li><code>GraphBuilder</code> creates a <code>NetworkX DiGraph</code> from concepts (nodes) and relationships (edges)</li>
+    <li>Edges below <code>--min-weight</code> are pruned</li>
+    <li>Parallel edges of different types are aggregated</li>
+    <li>Exports: <code>network.graphml</code>, <code>edges.csv</code>, <code>nodes.csv</code></li>
+  </ul>
+</div>
+
+<div class="stage-card s5">
+  <h3><span class="num">5</span> Analysis</h3>
+  <p><strong>Lines 98–152</strong></p>
+  <ul>
+    <li><strong>Centrality:</strong> degree, betweenness, closeness, eigenvector, PageRank</li>
+    <li><strong>Communities:</strong> Louvain (preferred) or label propagation</li>
+    <li><strong>Brokerage:</strong> nodes bridging communities</li>
+    <li><strong>Cross-source</strong> (combined mode): overlap %, bridging concepts, cross-source edges</li>
+  </ul>
+</div>
+
+<div class="stage-card s6">
+  <h3><span class="num">6</span> Visualisation</h3>
+  <p><strong>Lines 154–182</strong></p>
+  <ul>
+    <li><strong>Static:</strong> network graph, top concepts bar chart, community distribution, co-occurrence heatmap, source-coloured network, source overlap chart</li>
+    <li><strong>Interactive:</strong> pyvis HTML network with hover tooltips, zoom, drag</li>
+    <li>Combined mode colours nodes by source: <span class="tag tag-policy">Policy</span> <span class="tag tag-yelp">Yelp</span> <span class="tag tag-both">Both</span></li>
+  </ul>
+</div>
+
+</div>
+
+<!-- ───── 4. MODULE REFERENCE ───── -->
+<h2 id="modules">4. Module Reference</h2>
+
+<div class="mermaid">
+graph TD
+    PIPE["pipeline.py<br/><small>CLI entry point</small>"]
+
+    subgraph src/ingest
+        PDF_R["pdf_reader.py<br/><small>read_policy_pdf()</small>"]
+        YELP_R["yelp_reader.py<br/><small>load_yelp_reviews()</small>"]
+    end
+
+    subgraph src/preprocessing
+        CLEAN["cleaner.py<br/><small>clean_text()</small>"]
+        TOK["tokeniser.py<br/><small>SpacyTokeniser</small>"]
+    end
+
+    subgraph src/extraction
+        CONC["concept_extractor.py<br/><small>ConceptExtractor</small>"]
+        REL["relationship_extractor.py<br/><small>RelationshipExtractor</small>"]
+    end
+
+    subgraph src/network
+        BUILD["graph_builder.py<br/><small>GraphBuilder</small>"]
+        ANAL["graph_analysis.py<br/><small>GraphAnalyser</small>"]
+    end
+
+    subgraph src/visualisation
+        STAT["static_viz.py<br/><small>StaticVisualiser</small>"]
+        INTER["interactive_viz.py<br/><small>InteractiveVisualiser</small>"]
+    end
+
+    subgraph src/config
+        CONF["config.py<br/><small>paths, params, stop words</small>"]
+    end
+
+    PIPE --> PDF_R & YELP_R
+    PIPE --> CLEAN & TOK
+    PIPE --> CONC & REL
+    PIPE --> BUILD & ANAL
+    PIPE --> STAT & INTER
+    CONF -.-> PDF_R & YELP_R & TOK & CONC & REL & BUILD & STAT & INTER
+
+    style PIPE fill:#fff3e0,stroke:#f58231,stroke-width:2px
+    style CONF fill:#f5f5f5,stroke:#999,stroke-dasharray:5
+</div>
+
+<table>
+<thead>
+  <tr><th>Module</th><th>Key Classes / Functions</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+  <tr>
+    <td><code>src/config.py</code></td>
+    <td>Constants: paths, stop words, NER labels, thresholds</td>
+    <td>Centralised configuration for all modules</td>
+  </tr>
+  <tr>
+    <td><code>src/ingest/pdf_reader.py</code></td>
+    <td><code>read_policy_pdf()</code>, <code>pages_to_document()</code></td>
+    <td>Extract text from PDF using pdfplumber, strip artefacts</td>
+  </tr>
+  <tr>
+    <td><code>src/ingest/yelp_reader.py</code></td>
+    <td><code>load_yelp_reviews()</code></td>
+    <td>Read extracted Yelp JSONL, filter by category, sample</td>
+  </tr>
+  <tr>
+    <td><code>src/preprocessing/cleaner.py</code></td>
+    <td><code>clean_text(text, source)</code></td>
+    <td>Remove URLs, emails, normalise Unicode, strip noise</td>
+  </tr>
+  <tr>
+    <td><code>src/preprocessing/tokeniser.py</code></td>
+    <td><code>SpacyTokeniser</code>, <code>ProcessedDocument</code>, <code>ProcessedSentence</code></td>
+    <td>spaCy-based tokenisation, lemmatisation, NER, noun chunks</td>
+  </tr>
+  <tr>
+    <td><code>src/extraction/concept_extractor.py</code></td>
+    <td><code>ConceptExtractor</code>, <code>Concept</code></td>
+    <td>Extract concepts via NER + noun phrases + TF-IDF; tracks <code>source_origins</code></td>
+  </tr>
+  <tr>
+    <td><code>src/extraction/relationship_extractor.py</code></td>
+    <td><code>RelationshipExtractor</code>, <code>Relationship</code></td>
+    <td>Co-occurrence windows + dependency parsing; typed &amp; weighted edges</td>
+  </tr>
+  <tr>
+    <td><code>src/network/graph_builder.py</code></td>
+    <td><code>GraphBuilder</code></td>
+    <td>Build NetworkX DiGraph, prune by min_weight, export GraphML/CSV</td>
+  </tr>
+  <tr>
+    <td><code>src/network/graph_analysis.py</code></td>
+    <td><code>GraphAnalyser</code></td>
+    <td>Centrality, community detection, brokerage, cross-source analysis</td>
+  </tr>
+  <tr>
+    <td><code>src/visualisation/static_viz.py</code></td>
+    <td><code>StaticVisualiser</code></td>
+    <td>matplotlib/seaborn: network graphs, bar charts, heatmaps</td>
+  </tr>
+  <tr>
+    <td><code>src/visualisation/interactive_viz.py</code></td>
+    <td><code>InteractiveVisualiser</code></td>
+    <td>pyvis interactive HTML network with tooltips</td>
+  </tr>
+</tbody>
+</table>
+
+<!-- ───── 5. COMBINED MODE ───── -->
+<h2 id="combined">5. Combined Mode &amp; Cross-Source Analysis</h2>
+
+<p>When <code>--source combined</code> is used, the pipeline ingests <strong>both</strong> data sources into a unified corpus.
+Every concept is tagged with its origin, enabling cross-domain analysis.</p>
+
+<div class="mermaid">
+flowchart TD
+    subgraph Sources
+        P["Policy PDF<br/><small>source='policy'</small>"]
+        Y["Yelp Reviews<br/><small>source='yelp'</small>"]
+    end
+
+    P --> MERGE["Unified Document List"]
+    Y --> MERGE
+
+    MERGE --> EXT["Concept Extraction<br/><small>source_origins tracked</small>"]
+
+    EXT --> PO["Policy-only<br/>concepts"]
+    EXT --> YO["Yelp-only<br/>concepts"]
+    EXT --> BO["Shared<br/>concepts"]
+
+    PO --> NET["Network Graph<br/><small>source_type on nodes</small>"]
+    YO --> NET
+    BO --> NET
+
+    NET --> CA["Cross-Source Analysis"]
+    CA --> D1["source_distribution.csv"]
+    CA --> D2["cross_source_edges.csv"]
+    CA --> D3["bridging_concepts.csv"]
+    CA --> D4["cross_source_summary.json"]
+
+    style PO fill:#e8f0fe,stroke:#4363d8
+    style YO fill:#fee8e8,stroke:#e6194b
+    style BO fill:#e8f5e9,stroke:#3cb44b
+    style CA fill:#fff3e0,stroke:#f58231
+</div>
+
+<div class="card">
+  <h3>Cross-Source Metrics</h3>
+  <ul>
+    <li><strong>source_distribution</strong> — count of concepts per source type</li>
+    <li><strong>source_comparison_summary</strong> — policy-only vs yelp-only vs shared, overlap percentage</li>
+    <li><strong>cross_source_edges</strong> — every edge connecting nodes from different sources</li>
+    <li><strong>bridging_concepts</strong> — top concepts ranked by bridge_score = betweenness × (1 + cross-source neighbour ratio)</li>
+  </ul>
+</div>
+
+<!-- ───── 6. CLI ARGUMENTS ───── -->
+<h2 id="cli">6. CLI Arguments</h2>
+
+<table>
+<thead>
+  <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+  <tr><td><code>--source</code></td><td>choice</td><td><code>policy</code></td><td><code>policy</code>, <code>yelp</code>, or <code>combined</code></td></tr>
+  <tr><td><code>--output</code></td><td>string</td><td><code>results/</code></td><td>Output directory for all results</td></tr>
+  <tr><td><code>--methods</code></td><td>list</td><td><code>all</code></td><td>Extraction methods: <code>all</code>, <code>ner</code>, <code>np</code>, <code>tfidf</code></td></tr>
+  <tr><td><code>--min-weight</code></td><td>int</td><td><code>1</code></td><td>Minimum co-occurrence count to include an edge</td></tr>
+  <tr><td><code>--pdf-path</code></td><td>string</td><td>auto</td><td>Path to policy PDF file</td></tr>
+  <tr><td><code>--yelp-category</code></td><td>string</td><td><code>Restaurants</code></td><td>Business category filter for Yelp data</td></tr>
+  <tr><td><code>--yelp-sample</code></td><td>int</td><td><code>500</code></td><td>Number of reviews to sample (0 = all)</td></tr>
+</tbody>
+</table>
+
+<!-- ───── 7. OUTPUT FILES ───── -->
+<h2 id="outputs">7. Output Files</h2>
+
+<div class="mermaid">
+graph LR
+    subgraph Data["Data Exports"]
+        N1["nodes.csv"]
+        N2["edges.csv"]
+        N3["yelp_sample.csv"]
+        N4["network.graphml"]
+    end
+
+    subgraph Analysis["Analysis Results"]
+        A1["centralities.csv"]
+        A2["communities.csv"]
+        A3["brokers.csv"]
+    end
+
+    subgraph Cross["Cross-Source<br/>(combined only)"]
+        C1["source_distribution.csv"]
+        C2["cross_source_edges.csv"]
+        C3["bridging_concepts.csv"]
+        C4["cross_source_summary.json"]
+    end
+
+    subgraph Viz["Visualisations"]
+        V1["network_graph.png"]
+        V2["network_by_source.png"]
+        V3["top_concepts.png"]
+        V4["community_distribution.png"]
+        V5["cooccurrence_heatmap.png"]
+        V6["source_overlap.png"]
+        V7["interactive_network.html"]
+    end
+
+    style Data fill:#e8f0fe,stroke:#4363d8
+    style Analysis fill:#e8f5e9,stroke:#3cb44b
+    style Cross fill:#fff3e0,stroke:#f58231
+    style Viz fill:#e0f7fa,stroke:#42d4f4
+</div>
+
+<table>
+<thead><tr><th>File</th><th>Description</th><th>Use for</th></tr></thead>
+<tbody>
+  <tr><td><code>nodes.csv</code></td><td>All concepts: label, type, frequency, source_type</td><td>Concept inventory, filtering</td></tr>
+  <tr><td><code>edges.csv</code></td><td>All edges: source, target, weight, types, source_type</td><td>Relationship analysis</td></tr>
+  <tr><td><code>yelp_sample.csv</code></td><td>Yelp reviews used in this run</td><td>Data provenance, traceability</td></tr>
+  <tr><td><code>network.graphml</code></td><td>Full graph in GraphML format</td><td>Import into Gephi / Cytoscape</td></tr>
+  <tr><td><code>centralities.csv</code></td><td>5 centrality measures per node</td><td>Identify most important concepts</td></tr>
+  <tr><td><code>communities.csv</code></td><td>Detected communities with top members</td><td>Thematic clustering analysis</td></tr>
+  <tr><td><code>brokers.csv</code></td><td>Nodes bridging communities</td><td>Find inter-topic connectors</td></tr>
+  <tr><td><code>cross_source_summary.json</code></td><td>Overlap stats between sources</td><td>High-level cross-domain report</td></tr>
+  <tr><td><code>bridging_concepts.csv</code></td><td>Concepts connecting policy ↔ yelp</td><td>Cross-domain insight discovery</td></tr>
+  <tr><td><code>interactive_network.html</code></td><td>Zoomable, hoverable network</td><td>Exploration, client presentations</td></tr>
+  <tr><td><code>*.png</code></td><td>Static charts</td><td>Reports, presentations</td></tr>
+</tbody>
+</table>
+
+<!-- ───── 8. USAGE EXAMPLES ───── -->
+<h2 id="usage">8. Usage Examples</h2>
+
+<pre><code># Combined pipeline — 500 Yelp reviews + policy, min-weight 2
+PYTHONUNBUFFERED=1 venv/bin/python pipeline.py \
+    --source combined --yelp-sample 500 --min-weight 2 \
+    --output results/combined_500
+
+# Larger batch — 5000 reviews, stronger edge filter
+PYTHONUNBUFFERED=1 venv/bin/python pipeline.py \
+    --source combined --yelp-sample 5000 --min-weight 3 \
+    --output results/combined_5000
+
+# Policy only
+venv/bin/python pipeline.py --source policy --output results/policy_only
+
+# Yelp only, specific category
+venv/bin/python pipeline.py --source yelp --yelp-sample 1000 \
+    --yelp-category "Food" --output results/yelp_food
+
+# Use only NER + TF-IDF (skip noun phrases)
+venv/bin/python pipeline.py --source combined --methods ner tfidf \
+    --output results/combined_ner_tfidf</code></pre>
+
+<div class="card">
+  <h3>Scaling Guide</h3>
+  <table>
+    <thead><tr><th>Reviews</th><th>Est. Time</th><th>Recommended --min-weight</th></tr></thead>
+    <tbody>
+      <tr><td>500</td><td>~4 min</td><td>2</td></tr>
+      <tr><td>1,000</td><td>~8 min</td><td>2</td></tr>
+      <tr><td>5,000</td><td>~30–45 min</td><td>3</td></tr>
+      <tr><td>10,000</td><td>~1.5–2 hrs</td><td>4</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#e8f0fe',
+      primaryBorderColor: '#4363d8',
+      primaryTextColor: '#1a1a2e',
+      lineColor: '#666',
+      fontSize: '14px'
+    }
+  });
+</script>
+</body>
+</html>

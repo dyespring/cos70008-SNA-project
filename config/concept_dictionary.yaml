@@ -1,0 +1,33 @@
+# User-defined concept vocabulary (optional extension).
+# Analysts list domain terms so the network emphasises theoretically meaningful nodes.
+#
+# mode:
+#   allowlist — keep only concepts that match a canonical or alias below (after normalisation).
+#   merge_only — remap aliases to canonical and merge counts; other extracted concepts are kept.
+#
+# Limitations: phrases not appearing in text never become nodes; novel wording outside the
+# dictionary is dropped (allowlist) or left unmerged (merge_only).
+
+mode: allowlist
+
+entries:
+  - canonical: climate adaptation
+    aliases:
+      - adaptation
+      - resilience
+      - national adaptation plan
+  - canonical: renewable energy
+    aliases:
+      - clean energy
+      - renewables
+      - solar
+      - wind power
+  - canonical: emissions reduction
+    aliases:
+      - emissions
+      - greenhouse gas
+      - net zero
+  - canonical: risk assessment
+    aliases:
+      - climate risk
+      - vulnerability
