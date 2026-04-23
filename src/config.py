@@ -1,5 +1,6 @@
 """Global configuration for the Text-to-Network Engine."""
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,3 +52,20 @@ MIN_EDGE_WEIGHT = 1
 # ── Visualisation ──────────────────────────────────────────────────
 TOP_N_DISPLAY = 30
 GRAPH_LAYOUT = "spring"
+
+# ── LLM / RAG chatbot (Stage 8) ────────────────────────────────────
+# Provider is one of: "openai", "huggingface_api", "huggingface_local", "echo".
+# "echo" is a zero-dependency fallback that returns retrieved context verbatim —
+# useful for local testing when no LLM keys are configured.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "echo")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
+# API keys are read from the environment by each provider; centralised here
+# only so callers can check whether a provider is configured.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN", "") or os.getenv(
+    "HF_TOKEN", ""
+)

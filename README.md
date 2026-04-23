@@ -12,11 +12,12 @@ The engine ingests raw text (policy documents, Yelp reviews, or narrative text),
 
 1. **Data Ingestion** — Read PDF policy documents or Yelp JSON reviews
 2. **Preprocessing** — Clean, tokenise, lemmatise, and filter text
-3. **Concept Extraction** — NER, noun-phrase chunking, and TF-IDF keyword extraction
-4. **Relationship Extraction** — Co-occurrence windows, dependency parsing, and causal pattern matching
-5. **Network Construction** — Build NetworkX graphs with typed, weighted edges
-6. **Network Analysis** — Centrality, community detection, brokerage, path analysis
-7. **Visualisation** — Static matplotlib plots and interactive pyvis HTML graphs
+3. **Concept & Relationship Extraction** — NER, noun-phrase chunking, TF-IDF; co-occurrence windows, dependency parsing, and causal pattern matching
+4. **Network Construction** — Build NetworkX graphs with typed, weighted edges
+5. **Network Analysis** — Centrality, community detection, brokerage, path analysis
+6. **Visualisation** — Static matplotlib plots and interactive pyvis HTML graphs
+7. **Temporal Comparison** *(optional)* — Build separate networks per time slice / document section and compare overlap and drift
+8. **Conversational Exploration** *(optional)* — LLM/RAG chatbot grounded in the conceptual network
 
 ## Quick Start
 
@@ -30,29 +31,65 @@ python pipeline.py --source policy --output results/
 
 # Run on Yelp reviews (sampled)
 python pipeline.py --source yelp --yelp-category Restaurants --yelp-sample 500 --output results/
+
+# Add temporal comparison (3 slices) and sentiment-weighted edges
+python pipeline.py --source combined --temporal 3 --sentiment --output results/
+
+# Launch the interactive Streamlit dashboard (5 analysis tabs + Temporal + Chat)
+streamlit run src/extensions/dashboard.py
+
+# Stage 8: conversational Q&A over the knowledge graph
+python chat.py --source policy              # standalone
+python pipeline.py --source policy --chat   # appended to the main pipeline
+```
+
+### LLM / chatbot configuration
+
+The chatbot (`chat.py`, `--chat`, and the dashboard **Chat** tab) is
+provider-agnostic. Select a backend via `LLM_PROVIDER`:
+
+| Provider             | Env vars                        | Install                       |
+|----------------------|----------------------------------|-------------------------------|
+| `echo` *(default)*   | none                             | none — no-LLM fallback        |
+| `openai`             | `OPENAI_API_KEY`, `LLM_MODEL`    | `pip install openai`          |
+| `huggingface_api`    | `HUGGINGFACE_API_TOKEN`, `LLM_MODEL` | `pip install huggingface_hub` |
+| `huggingface_local`  | `LLM_MODEL` (local model id)    | `pip install transformers`    |
+
+Optional semantic retrieval (improves routing for paraphrased questions)
+requires `sentence-transformers` + `faiss-cpu` (already in `requirements.txt`).
+
+```bash
+export LLM_PROVIDER=openai
+export OPENAI_API_KEY=sk-...
+python chat.py --source combined --vector-store
 ```
 
 ## Project Structure
 
 ```
 src/
-  config.py               # Global settings and parameters
+  config.py               # Global settings and parameters (including LLM/embedding)
   ingest/                 # Data readers (PDF, Yelp JSON)
   preprocessing/          # Text cleaning and tokenisation
   extraction/             # Concept and relationship extraction
   network/                # Graph construction and SNA analysis
   visualisation/          # Static and interactive visualisations
-  extensions/             # Sentiment, temporal, Streamlit dashboard
+  extensions/             # Sentiment, concept dictionary, temporal,
+                          # Streamlit dashboard, chatbot (Stage 8)
 notebooks/                # Jupyter notebooks for exploration and demos
+config/                   # User-editable concept_dictionary.yaml
 tests/                    # Unit tests
-pipeline.py               # CLI entry point
+pipeline.py               # CLI entry point (stages 1-8)
+chat.py                   # Standalone Stage-8 chatbot entry point
 ```
 
 ## Optional Extensions
 
-- **Sentiment-weighted edges** — Attach VADER/TextBlob sentiment scores to relationships
-- **Temporal comparison** — Compare networks across document sections or time periods
-- **Interactive dashboard** — Streamlit app for exploring networks in the browser
+- **Sentiment-weighted edges** — Attach VADER/TextBlob sentiment scores to relationships (`--sentiment`)
+- **User-defined concept dictionary** — Analyst-controlled vocabularies (`--concept-dictionary default`, see `config/concept_dictionary.yaml`)
+- **Temporal comparison** — Compare networks across document sections or time periods (`--temporal N`, or the Temporal tab in the dashboard)
+- **Interactive dashboard** — Streamlit app for exploring networks in the browser, including a Chat tab wired to the Stage-8 chatbot
+- **LLM/RAG chatbot (Stage 8)** — Conversational Q&A grounded in the graph, with pluggable OpenAI / Hugging Face / local providers (`python chat.py`, `--chat`, or the dashboard Chat tab)
 
 ## Data Sources
 
