@@ -24,3 +24,7 @@ faiss-cpu>=1.7
 # huggingface_hub>=0.20  # HuggingFaceAPIProvider (hosted inference)
 # transformers>=4.30     # HuggingFaceLocalProvider (local generation)
 
+# ── Optional Neo4j backend ─────────────────────────────────────────
+# Enable with `docker compose up -d` + NEO4J_PASSWORD env var.
+neo4j>=5.20
+

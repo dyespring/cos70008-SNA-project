@@ -20,13 +20,17 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from src import config
 
 if TYPE_CHECKING:
     from src.extensions.graph_context import GraphContext
-    from src.extensions.graph_vectorstore import GraphVectorStore
+    from src.extensions.graph_vectorstore import (
+        GraphEdgeVectorStore,
+        GraphVectorStore,
+    )
+    from src.extensions.neo4j_edge_vectorstore import Neo4jEdgeVectorStore
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -64,7 +68,13 @@ class EchoProvider(LLMProvider):
 
 
 class OpenAIProvider(LLMProvider):
-    """OpenAI Chat Completions (``openai>=1.0``)."""
+    """OpenAI-compatible Chat Completions (``openai>=1.0``).
+
+    Works with any provider that exposes the OpenAI Chat Completions API,
+    including official OpenAI, Azure, and OpenAI-compatible gateways. Pass
+    ``base_url`` to point at a different endpoint (used by
+    :class:`DashScopeProvider` to talk to Aliyun's ``compatible-mode`` API).
+    """
 
     name = "openai"
 
@@ -74,6 +84,7 @@ class OpenAIProvider(LLMProvider):
         api_key: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        base_url: str | None = None,
     ):
         try:
             from openai import OpenAI  # type: ignore
@@ -94,7 +105,78 @@ class OpenAIProvider(LLMProvider):
                 "OPENAI_API_KEY is not set. Export it in your shell or set "
                 "config.OPENAI_API_KEY before constructing OpenAIProvider."
             )
-        self._client = OpenAI(api_key=key)
+        client_kwargs: dict = {"api_key": key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = OpenAI(**client_kwargs)
+
+    def complete(self, system_prompt: str, user_message: str) -> str:
+        response = self._client.chat.completions.create(
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+
+class DashScopeProvider(LLMProvider):
+    """Aliyun DashScope (Qwen) via the OpenAI-compatible endpoint.
+
+    DashScope exposes a drop-in OpenAI Chat Completions API at
+    ``https://dashscope.aliyuncs.com/compatible-mode/v1`` so we can reuse the
+    same ``openai`` Python client — no new dependency required.
+
+    Configure via:
+
+    * ``DASHSCOPE_API_KEY``   — required
+    * ``LLM_MODEL``           — defaults to ``qwen-turbo``; also supports
+      ``qwen-plus``, ``qwen-max``, ``qwen2.5-72b-instruct``, etc.
+    * ``DASHSCOPE_BASE_URL``  — override only if you have a private endpoint.
+    """
+
+    name = "dashscope"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        base_url: str | None = None,
+    ):
+        try:
+            from openai import OpenAI  # type: ignore
+        except ImportError as e:
+            raise ImportError(
+                "The DashScope provider reuses the `openai` package "
+                "(OpenAI-compatible mode). Install it with "
+                "`pip install openai>=1.0`."
+            ) from e
+        key = api_key or config.DASHSCOPE_API_KEY
+        if not key:
+            raise RuntimeError(
+                "DASHSCOPE_API_KEY is not set. Get a key from "
+                "https://dashscope.console.aliyun.com/ and export it, "
+                "or add it to your .env file."
+            )
+        # Prefer the explicit DashScope default if the user kept the OpenAI
+        # default model name in LLM_MODEL.
+        chosen_model = model or config.LLM_MODEL
+        if chosen_model.startswith("gpt-"):
+            chosen_model = "qwen-turbo"
+        self.model = chosen_model
+        self.temperature = (
+            temperature if temperature is not None else config.LLM_TEMPERATURE
+        )
+        self.max_tokens = max_tokens or config.LLM_MAX_TOKENS
+        self._client = OpenAI(
+            api_key=key,
+            base_url=base_url or config.DASHSCOPE_BASE_URL,
+        )
 
     def complete(self, system_prompt: str, user_message: str) -> str:
         response = self._client.chat.completions.create(
@@ -184,11 +266,21 @@ def build_default_provider() -> LLMProvider:
 
     Falls back to :class:`EchoProvider` on any construction error so the
     chatbot remains usable without external dependencies or API keys.
+
+    Recognised provider names (case-insensitive):
+
+    * ``openai``                              — official OpenAI
+    * ``dashscope`` / ``qwen`` / ``aliyun``   — Aliyun DashScope (Qwen)
+    * ``huggingface_api`` / ``hf_api``        — HF hosted inference
+    * ``huggingface_local`` / ``transformers``— local transformers pipeline
+    * ``echo`` (default)                      — return retrieved context only
     """
     provider = (config.LLM_PROVIDER or "echo").lower()
     try:
         if provider == "openai":
             return OpenAIProvider()
+        if provider in {"dashscope", "qwen", "aliyun", "modelscope"}:
+            return DashScopeProvider()
         if provider in {"huggingface_api", "hf_api", "huggingface"}:
             return HuggingFaceAPIProvider()
         if provider in {"huggingface_local", "hf_local", "transformers"}:
@@ -220,9 +312,13 @@ class QueryRouter:
         self,
         graph_context: "GraphContext",
         vector_store: Optional["GraphVectorStore"] = None,
+        edge_vector_store: Optional[
+            "GraphEdgeVectorStore | Neo4jEdgeVectorStore"
+        ] = None,
     ):
         self.gc = graph_context
         self.vs = vector_store
+        self.evs = edge_vector_store
 
     # ── Intent regexes ────────────────────────────────────────────
     _RE_TOP = re.compile(
@@ -232,6 +328,22 @@ class QueryRouter:
     _RE_COMMUNITY = re.compile(r"\bcommunit", re.I)
     _RE_SUMMARY = re.compile(r"(?:summary|overview|size|how many|describe\s+(?:the\s+)?(?:graph|network))", re.I)
     _RE_COMPARE = re.compile(r"(?:compare|overlap|shared)", re.I)
+    # Relational-verb hint: fires for questions like "who recommended X?",
+    # "what did customers order?", "who loves Y?". Triggers edge-level vector
+    # search when an edge vector store is available.
+    _RE_RELATION = re.compile(
+        r"\b(recommend(?:ed|s|ing)?|suggest(?:ed|s|ing)?|hate(?:d|s)?|"
+        r"love(?:d|s)?|order(?:ed|s|ing)?|buy|bought|give|gave|gives|"
+        r"serve(?:d|s)?|cause(?:d|s)?|bring|brought|complain(?:ed|s)?|"
+        r"prefer(?:red|s)?|tip|try|tried|tries|enjoy(?:ed|s)?|"
+        r"dislike(?:d|s)?)\b",
+        re.I,
+    )
+    _RE_RELATION_WH = re.compile(
+        r"\b(who|what|which)\b.+\b(recommend|suggest|hate|love|order|buy|"
+        r"give|serve|cause|bring|complain|prefer|tip|try|enjoy|dislike)\b",
+        re.I,
+    )
 
     # ── Route ──────────────────────────────────────────────────────
     def route(self, question: str, top_k: int = 5) -> RoutedQuery:
@@ -275,6 +387,37 @@ class QueryRouter:
             routed.matched_labels.append(lbl)
         if self._RE_PATH.search(ql) and len(resolved) >= 2:
             routed.snippets.append(self.gc.shortest_path(resolved[0], resolved[1]))
+
+        # 4.5. Edge-level semantic search for relational questions
+        #      (e.g. "who recommended X?", "what causes Y?"). Only runs when
+        #      an edge vector store is plugged in; stays silent otherwise so
+        #      backward-compatible questions behave identically.
+        if self.evs and getattr(self.evs, "available", False):
+            if self._RE_RELATION.search(ql) or self._RE_RELATION_WH.search(ql):
+                try:
+                    edge_hits: list[dict[str, Any]] = self.evs.search(q, k=top_k)
+                except Exception:
+                    edge_hits = []
+                for hit in edge_hits:
+                    src = hit.get("source_label") or "?"
+                    tgt = hit.get("target_label") or "?"
+                    verb = hit.get("verb") or "co-occurs with"
+                    score = float(hit.get("score") or 0.0)
+                    weight = hit.get("weight")
+                    sentiment = hit.get("sentiment")
+                    tail = ""
+                    if weight is not None:
+                        tail += f" (weight={weight}"
+                        if sentiment is not None:
+                            try:
+                                tail += f", sentiment={float(sentiment):+.2f}"
+                            except (TypeError, ValueError):
+                                pass
+                        tail += ")"
+                    routed.snippets.append(
+                        f"[edge match score={score:.3f}]\n"
+                        f"\"{src} {verb} {tgt}\"{tail}"
+                    )
 
         # 4. Vector search for any remaining semantic intent
         if self.vs and self.vs.available:
@@ -326,11 +469,19 @@ class GraphChatbot:
         graph_context: "GraphContext",
         llm_provider: Optional[LLMProvider] = None,
         vector_store: Optional["GraphVectorStore"] = None,
+        edge_vector_store: Optional[
+            "GraphEdgeVectorStore | Neo4jEdgeVectorStore"
+        ] = None,
     ):
         self.gc = graph_context
         self.llm = llm_provider or build_default_provider()
         self.vs = vector_store
-        self.router = QueryRouter(graph_context, vector_store)
+        self.evs = edge_vector_store
+        self.router = QueryRouter(
+            graph_context,
+            vector_store,
+            edge_vector_store=edge_vector_store,
+        )
 
     # ── Public entry point ────────────────────────────────────────
     def ask(self, question: str, history: list[dict] | None = None) -> str:

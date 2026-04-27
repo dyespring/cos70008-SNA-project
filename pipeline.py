@@ -174,6 +174,39 @@ def main(args: argparse.Namespace) -> None:
         with open(output_dir / "cross_source_summary.json", "w") as f:
             json.dump(comparison, f, indent=2)
 
+    # ── Optional: push to Neo4j ────────────────────────────────────
+    if args.neo4j:
+        print("\n       Pushing graph to Neo4j...")
+        try:
+            from src.extensions.neo4j_store import (
+                Neo4jStore,
+                Neo4jUnavailableError,
+            )
+            with Neo4jStore.from_config() as _store:
+                counts = _store.push_graph(
+                    G,
+                    partition=partition,
+                    centrality_df=centrality_df,
+                    source_label=args.source,
+                    reset=args.neo4j_reset,
+                )
+                embedded = _store.embed_and_store(G, source_label=args.source)
+                edge_embedded = _store.embed_edges(
+                    G,
+                    source_label=args.source,
+                    top_n_association=args.edge_embed_top_n,
+                )
+            print(
+                f"         Neo4j: {counts['nodes']} nodes, {counts['edges']} edges"
+                + (f", {embedded} node embeddings" if embedded else "")
+                + (f", {edge_embedded} edge embeddings" if edge_embedded else "")
+                + f" under source_label='{args.source}'"
+            )
+        except Neo4jUnavailableError as e:
+            print(f"         Neo4j unavailable: {e}")
+        except Exception as e:
+            print(f"         Neo4j push failed: {e}")
+
     # ── Stage 6: Visualisation ─────────────────────────────────────
     print("\n[6/8] Generating visualisations...")
     from src.visualisation.static_viz import StaticVisualiser
@@ -249,16 +282,63 @@ def main(args: argparse.Namespace) -> None:
         print("\n[8/8] Starting chatbot (Ctrl+D or 'exit' to quit)...")
         try:
             from src.extensions.chatbot import GraphChatbot, build_default_provider
-            from src.extensions.graph_context import GraphContext
 
-            gc = GraphContext(
-                G=G,
-                partition=partition,
-                centrality_df=centrality_df,
-                source_label=args.source,
-            )
+            gc = None
+            vector_store = None
+            edge_vector_store = None
+
+            use_neo4j = args.neo4j
+            if use_neo4j:
+                try:
+                    from src.extensions.neo4j_store import Neo4jStore
+                    from src.extensions.neo4j_graph_context import Neo4jGraphContext
+                    from src.extensions.neo4j_vectorstore import Neo4jVectorStore
+                    from src.extensions.neo4j_edge_vectorstore import (
+                        Neo4jEdgeVectorStore,
+                    )
+
+                    store = Neo4jStore.from_config()
+                    store.connect()
+                    gc = Neo4jGraphContext(store, source_label=args.source)
+                    vector_store = Neo4jVectorStore(store, source_label=args.source)
+                    edge_vector_store = Neo4jEdgeVectorStore(
+                        store, source_label=args.source
+                    )
+                    if not getattr(edge_vector_store, "available", False):
+                        edge_vector_store = None
+                    print("       Backend: Neo4j (Cypher + native vector index)")
+                except Exception as e:
+                    print(f"       Neo4j backend unavailable ({e}); falling back.")
+                    gc = None
+
+            if gc is None:
+                from src.extensions.graph_context import GraphContext
+                from src.extensions.graph_vectorstore import (
+                    GraphEdgeVectorStore,
+                    GraphVectorStore,
+                )
+
+                gc = GraphContext(
+                    G=G,
+                    partition=partition,
+                    centrality_df=centrality_df,
+                    source_label=args.source,
+                )
+                vector_store = GraphVectorStore(gc)
+                edge_vector_store = GraphEdgeVectorStore(
+                    gc, top_n_association=args.edge_embed_top_n
+                )
+                if not getattr(edge_vector_store, "available", False):
+                    edge_vector_store = None
+                print("       Backend: in-memory NetworkX + FAISS")
+
             provider = build_default_provider()
-            bot = GraphChatbot(graph_context=gc, llm_provider=provider)
+            bot = GraphChatbot(
+                graph_context=gc,
+                llm_provider=provider,
+                vector_store=vector_store,
+                edge_vector_store=edge_vector_store,
+            )
             _run_chat_loop(bot)
         except Exception as e:
             print(f"       Chatbot unavailable: {e}")
@@ -352,6 +432,27 @@ def parse_args() -> argparse.Namespace:
         "--chat",
         action="store_true",
         help="After Stage 7, enter an interactive chatbot (Stage 8) over the knowledge graph.",
+    )
+    parser.add_argument(
+        "--neo4j",
+        action="store_true",
+        help="Push the built network to a local Neo4j instance (configure via NEO4J_* env vars) "
+             "and route the --chat backend through Cypher + the native vector index.",
+    )
+    parser.add_argument(
+        "--neo4j-reset",
+        action="store_true",
+        help="Delete existing Concept nodes with the current --source label before pushing. "
+             "Useful when iterating to keep the graph deterministic.",
+    )
+    parser.add_argument(
+        "--edge-embed-top-n",
+        type=int,
+        default=2000,
+        metavar="N",
+        help="Edge-level semantic search: embed all verb-bearing edges plus the "
+             "top-N ASSOCIATION edges by weight (default 2000). Applies to both "
+             "the Neo4j push and the in-memory chatbot backend.",
     )
     return parser.parse_args()
 

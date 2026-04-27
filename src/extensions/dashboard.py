@@ -16,6 +16,8 @@ sys.path.insert(0, str(_root))
 import pandas as pd
 import streamlit as st
 
+from src import config
+
 st.set_page_config(page_title="Text-to-Network Explorer", layout="wide")
 
 # #region agent log
@@ -185,6 +187,7 @@ def _build_chatbot(
     graph_fp: str,
     provider: str,
     enable_vector: bool,
+    backend: str,
     *,
     _G,
     _partition,
@@ -195,30 +198,82 @@ def _build_chatbot(
 
     Leading underscores on _G, _partition, _centrality_df tell Streamlit to
     skip hashing those complex objects — the cache key is built from
-    graph_fp + provider + enable_vector + source_key instead.
+    graph_fp + provider + enable_vector + backend + source_key instead.
+
+    Parameters
+    ----------
+    backend : {"memory", "neo4j"}
+        ``memory`` uses the in-process NetworkX graph + FAISS vector store.
+        ``neo4j`` routes retrieval through a running Neo4j instance (requires
+        the pipeline to have been run once with ``--neo4j`` to populate it).
     """
     from src import config
     from src.extensions.chatbot import GraphChatbot, build_default_provider
-    from src.extensions.graph_context import GraphContext
 
     prior_provider = config.LLM_PROVIDER
     config.LLM_PROVIDER = provider
     llm = build_default_provider()
     config.LLM_PROVIDER = prior_provider
 
-    gc = GraphContext(
-        G=_G,
-        partition=_partition,
-        centrality_df=_centrality_df,
-        source_label=source_key,
-    )
+    gc = None
     vs = None
-    if enable_vector:
-        from src.extensions.graph_vectorstore import GraphVectorStore
-        vs = GraphVectorStore(gc)
-        if not vs.available:
-            vs = None
-    return GraphChatbot(graph_context=gc, llm_provider=llm, vector_store=vs)
+    evs = None
+
+    if backend == "neo4j":
+        try:
+            from src.extensions.neo4j_store import Neo4jStore
+            from src.extensions.neo4j_graph_context import Neo4jGraphContext
+            from src.extensions.neo4j_vectorstore import Neo4jVectorStore
+            from src.extensions.neo4j_edge_vectorstore import (
+                Neo4jEdgeVectorStore,
+            )
+
+            store = Neo4jStore.from_config()
+            store.connect()
+            gc = Neo4jGraphContext(store, source_label=source_key)
+            if enable_vector:
+                vs = Neo4jVectorStore(store, source_label=source_key)
+                if not vs.available:
+                    vs = None
+                evs = Neo4jEdgeVectorStore(store, source_label=source_key)
+                if not evs.available:
+                    evs = None
+        except Exception as e:
+            _agent_log(
+                "neo4j_backend_failed",
+                data={"error": str(e)},
+                hid="H2",
+                location="dashboard.py:_build_chatbot",
+            )
+            gc = None
+
+    if gc is None:
+        from src.extensions.graph_context import GraphContext
+
+        gc = GraphContext(
+            G=_G,
+            partition=_partition,
+            centrality_df=_centrality_df,
+            source_label=source_key,
+        )
+        if enable_vector:
+            from src.extensions.graph_vectorstore import (
+                GraphEdgeVectorStore,
+                GraphVectorStore,
+            )
+            vs = GraphVectorStore(gc)
+            if not vs.available:
+                vs = None
+            evs = GraphEdgeVectorStore(gc)
+            if not evs.available:
+                evs = None
+
+    return GraphChatbot(
+        graph_context=gc,
+        llm_provider=llm,
+        vector_store=vs,
+        edge_vector_store=evs,
+    )
 
 
 def main():
@@ -367,42 +422,90 @@ def main():
     with tab6:
         st.subheader("Chat with the knowledge graph")
         st.caption(
-            "Conversational Q&A grounded in the graph. Uses the provider set "
-            "in `src/config.py` (default: `echo`, a no-LLM fallback that "
-            "returns retrieved graph context verbatim)."
+            "Conversational Q&A grounded in the graph. Default provider is "
+            "loaded from `LLM_PROVIDER` in `.env` (or `src/config.py`); "
+            "`echo` is a no-LLM fallback that returns retrieved graph "
+            "context verbatim."
         )
 
         with st.expander("Chatbot settings", expanded=False):
+            _provider_options = [
+                "echo",
+                "openai",
+                "dashscope",
+                "huggingface_api",
+                "huggingface_local",
+            ]
+            _default_provider = (config.LLM_PROVIDER or "echo").lower()
+            _alias = {"qwen": "dashscope", "aliyun": "dashscope", "modelscope": "dashscope"}
+            _default_provider = _alias.get(_default_provider, _default_provider)
+            if _default_provider not in _provider_options:
+                _default_provider = "echo"
             provider_choice = st.selectbox(
                 "LLM provider",
-                ["echo", "openai", "huggingface_api", "huggingface_local"],
-                index=0,
+                _provider_options,
+                index=_provider_options.index(_default_provider),
                 help=(
-                    "`echo` requires no API key. Others rely on env vars "
-                    "(e.g. OPENAI_API_KEY) — see README."
+                    "Default comes from `LLM_PROVIDER` in `.env`. "
+                    "`echo` requires no API key. `dashscope` uses Qwen via "
+                    "`DASHSCOPE_API_KEY`. `openai` uses `OPENAI_API_KEY`. "
+                    "Hugging Face options need `HUGGINGFACE_API_TOKEN` (api) "
+                    "or a local install (local). See README."
                 ),
             )
             use_vec = st.checkbox(
-                "Enable semantic vector search (FAISS)",
+                "Enable semantic vector search",
                 value=False,
                 help=(
-                    "Requires `sentence-transformers` and `faiss-cpu`. "
-                    "Falls back gracefully if deps are missing."
+                    "Uses `sentence-transformers` to embed queries. "
+                    "Backed by FAISS in-memory, or Neo4j's vector index "
+                    "when the Neo4j backend is selected."
                 ),
             )
+
+            from src.extensions.neo4j_store import Neo4jStore as _NStore
+            neo4j_available = _NStore.ping()
+            backend_choice = st.radio(
+                "Retrieval backend",
+                options=["memory", "neo4j"],
+                format_func=lambda v: {
+                    "memory": "In-memory NetworkX (FAISS)",
+                    "neo4j": "Neo4j (Cypher + native vector index)",
+                }[v],
+                index=0,
+                horizontal=True,
+                help=(
+                    "Neo4j requires `docker compose up -d` plus `python pipeline.py "
+                    "--source <src> --neo4j` to have populated the instance."
+                ),
+            )
+            if backend_choice == "neo4j" and not neo4j_available:
+                st.warning(
+                    "Neo4j is not reachable at the configured NEO4J_URI — "
+                    "falling back to the in-memory backend. Check `.env` and "
+                    "that `docker compose up -d` is running."
+                )
 
         # #region agent log
         _agent_log("chat_tab_entered", hid="H1", location="dashboard.py:tab6")
         # #endregion
 
+        effective_backend = (
+            "neo4j" if backend_choice == "neo4j" and neo4j_available else "memory"
+        )
         bot = _build_chatbot(
             _graph_fingerprint(G),
             provider_choice,
             use_vec,
+            effective_backend,
             _G=G,
             _partition=partition,
             _centrality_df=centrality_df,
             source_key=source_key,
+        )
+        st.caption(
+            f"Backend in use: **{effective_backend}**"
+            + (" (Cypher + vector index)" if effective_backend == "neo4j" else " (NetworkX + FAISS)")
         )
 
         # #region agent log

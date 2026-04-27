@@ -87,32 +87,62 @@ def main() -> None:
         "--output", type=str, default=str(RESULTS_DIR),
         help="Output directory (unused at the moment, reserved for future caching).",
     )
+    parser.add_argument(
+        "--neo4j",
+        action="store_true",
+        help="Route retrieval through a local Neo4j instance (requires "
+             "`python pipeline.py --neo4j` to have populated it first).",
+    )
     args = parser.parse_args()
 
     if args.provider:
         from src import config
         config.LLM_PROVIDER = args.provider
 
-    print(f"Building conceptual network from source: {args.source} ...")
-    G, partition, centrality_df = build_graph(args)
-    print(
-        f"  Graph ready: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, "
-        f"{len(set(partition.values()))} communities."
-    )
-
     from src.extensions.chatbot import GraphChatbot, build_default_provider
-    from src.extensions.graph_context import GraphContext
 
-    gc = GraphContext(
-        G=G, partition=partition, centrality_df=centrality_df, source_label=args.source
-    )
+    gc = None
     vs = None
-    if args.vector_store:
-        from src.extensions.graph_vectorstore import GraphVectorStore
-        vs = GraphVectorStore(gc)
-        if not vs.available:
-            print("  (vector store unavailable; falling back to structured retrieval)")
-            vs = None
+
+    if args.neo4j:
+        try:
+            from src.extensions.neo4j_store import Neo4jStore
+            from src.extensions.neo4j_graph_context import Neo4jGraphContext
+            from src.extensions.neo4j_vectorstore import Neo4jVectorStore
+
+            store = Neo4jStore.from_config()
+            store.connect()
+            gc = Neo4jGraphContext(store, source_label=args.source)
+            vs = Neo4jVectorStore(store, source_label=args.source)
+            if not vs.available:
+                vs = None
+            print(
+                f"  Backend: Neo4j (source_label='{args.source}', "
+                f"{len(gc.all_labels())} concepts loaded)"
+            )
+        except Exception as e:
+            print(f"  Neo4j backend unavailable ({e}); falling back to in-memory build.")
+            gc = None
+
+    if gc is None:
+        print(f"Building conceptual network from source: {args.source} ...")
+        G, partition, centrality_df = build_graph(args)
+        print(
+            f"  Graph ready: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, "
+            f"{len(set(partition.values()))} communities."
+        )
+        from src.extensions.graph_context import GraphContext
+
+        gc = GraphContext(
+            G=G, partition=partition, centrality_df=centrality_df,
+            source_label=args.source,
+        )
+        if args.vector_store:
+            from src.extensions.graph_vectorstore import GraphVectorStore
+            vs = GraphVectorStore(gc)
+            if not vs.available:
+                print("  (vector store unavailable; falling back to structured retrieval)")
+                vs = None
 
     bot = GraphChatbot(
         graph_context=gc, llm_provider=build_default_provider(), vector_store=vs

@@ -37,6 +37,12 @@ build/
 # Generated outputs (regenerate with pipeline.py)
 results/
 
+# Neo4j Docker volume mounts (data / logs / plugins — local DB state)
+.neo4j/
+
+# Local environment overrides
+.env
+
 # OS / editors
 .DS_Store
 Thumbs.db
