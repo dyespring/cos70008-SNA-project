@@ -13,8 +13,10 @@ Responsibilities:
 * Batched upserts of the NetworkX graph (nodes + edges).
 * Optional embedding backfill using ``sentence-transformers``.
 
-The graph model deliberately mirrors what ``GraphContext`` already expects,
-so the node/edge properties round-trip from NetworkX -> Neo4j -> Cypher.
+The graph model is the canonical schema for the conceptual network in the
+Neo4j-only pipeline. ``Neo4jGraphContext`` reads from it directly via
+Cypher and ``Neo4jGraphWriter`` writes into it without ever materialising
+an in-memory graph.
 """
 
 from __future__ import annotations
@@ -147,11 +149,29 @@ class Neo4jStore:
 
     # ── Schema ─────────────────────────────────────────────────────
     def ensure_schema(self) -> None:
-        """Create id uniqueness constraint and vector indexes if missing."""
+        """Create id uniqueness constraint, lookup indexes and vector indexes."""
         with self.session() as s:
             s.run(
                 "CREATE CONSTRAINT concept_id IF NOT EXISTS "
                 "FOR (c:Concept) REQUIRE c.id IS UNIQUE"
+            )
+            # Composite index speeds up the per-source / per-slice scoping
+            # used by GDS projections, the writer and the dashboard.
+            s.run(
+                "CREATE INDEX concept_source_slice IF NOT EXISTS "
+                "FOR (c:Concept) ON (c.source_label, c.slice_id)"
+            )
+            s.run(
+                "CREATE INDEX concept_label IF NOT EXISTS "
+                "FOR (c:Concept) ON (c.label)"
+            )
+            s.run(
+                "CREATE INDEX concept_community IF NOT EXISTS "
+                "FOR (c:Concept) ON (c.community)"
+            )
+            s.run(
+                "CREATE INDEX related_source_slice IF NOT EXISTS "
+                "FOR ()-[r:RELATED]-() ON (r.source_label, r.slice_id)"
             )
             s.run(
                 "CREATE VECTOR INDEX $name IF NOT EXISTS "
@@ -177,19 +197,41 @@ class Neo4jStore:
             )
 
     # ── Ingestion ──────────────────────────────────────────────────
-    def wipe_source(self, source_label: str) -> int:
-        """Delete all Concept nodes scoped to a given source_label.
+    def wipe_source(
+        self, source_label: str, slice_id: str | None = None
+    ) -> int:
+        """Delete all Concept nodes scoped to a given source_label / slice.
 
         Returns the number of nodes removed. Used for deterministic re-runs.
+
+        Implemented as two statements so the COUNT row is unambiguous —
+        a single MATCH ... WITH c, count(c) ... DETACH DELETE form
+        groups per-node and trips a "multiple records" warning when the
+        result is consumed via ``.single()``.
         """
         with self.session() as s:
-            result = s.run(
-                "MATCH (c:Concept {source_label: $s}) "
-                "WITH c, count(c) AS n "
-                "DETACH DELETE c RETURN n",
-                s=source_label,
-            )
-            rec = result.single()
+            if slice_id is None:
+                count_q = (
+                    "MATCH (c:Concept {source_label: $s}) RETURN count(c) AS n"
+                )
+                delete_q = (
+                    "MATCH (c:Concept {source_label: $s}) DETACH DELETE c"
+                )
+                rec = s.run(count_q, s=source_label).single()
+                s.run(delete_q, s=source_label).consume()
+            else:
+                count_q = (
+                    "MATCH (c:Concept {source_label: $s, slice_id: $sid}) "
+                    "RETURN count(c) AS n"
+                )
+                delete_q = (
+                    "MATCH (c:Concept {source_label: $s, slice_id: $sid}) "
+                    "DETACH DELETE c"
+                )
+                rec = s.run(count_q, s=source_label, sid=slice_id).single()
+                s.run(
+                    delete_q, s=source_label, sid=slice_id
+                ).consume()
             return int(rec["n"]) if rec else 0
 
     def push_graph(
@@ -356,15 +398,20 @@ class Neo4jStore:
     # ── Embeddings ─────────────────────────────────────────────────
     def embed_and_store(
         self,
-        G: nx.DiGraph,
         source_label: str = "combined",
+        slice_id: str | None = None,
         model_name: str | None = None,
+        G: nx.DiGraph | None = None,
     ) -> int:
-        """Compute sentence-transformer embeddings for nodes and store them.
+        """Compute sentence-transformer embeddings for Concept nodes.
 
-        Uses the same short-description format as GraphVectorStore so semantic
-        search results stay comparable between FAISS and Neo4j backends.
-        Returns the number of nodes embedded. Returns 0 silently if
+        Reads node + neighbour data directly from Neo4j (so it works in the
+        Neo4j-only pipeline where no in-memory ``nx.DiGraph`` ever exists).
+        The legacy ``G`` argument is still accepted for backward
+        compatibility with older call sites; if provided, descriptions come
+        from the in-memory graph.
+
+        Returns the number of nodes embedded; 0 silently if
         ``sentence-transformers`` is unavailable.
         """
         try:
@@ -376,18 +423,23 @@ class Neo4jStore:
             return 0
 
         model_name = model_name or _cfg.EMBEDDING_MODEL
-        model = SentenceTransformer(model_name)
 
-        node_ids = [str(n) for n in G.nodes()]
-        descriptions = [_short_description(G, n) for n in G.nodes()]
+        if G is not None:
+            node_ids = [str(n) for n in G.nodes()]
+            descriptions = [_short_description(G, n) for n in G.nodes()]
+        else:
+            node_ids, descriptions = self._read_node_descriptions(
+                source_label, slice_id
+            )
+
         if not node_ids:
             return 0
 
+        model = SentenceTransformer(model_name)
         vectors = model.encode(
             descriptions, convert_to_numpy=True, show_progress_bar=False
         ).astype("float32")
 
-        # Use APOC-free Cypher — db.create.setNodeVectorProperty validates dim.
         with self.session() as s:
             for batch_start in range(0, len(node_ids), _EMBED_BATCH):
                 batch_ids = node_ids[batch_start : batch_start + _EMBED_BATCH]
@@ -407,28 +459,74 @@ class Neo4jStore:
         logger.info("Neo4j: stored %d embeddings (%s)", len(node_ids), model_name)
         return len(node_ids)
 
+    def _read_node_descriptions(
+        self, source_label: str, slice_id: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Pull (id, short_description) pairs for every Concept in scope.
+
+        The description string mimics ``_short_description`` but is built
+        purely from Cypher results so we never need an in-memory graph.
+        """
+        if slice_id is None:
+            params = {"sl": source_label}
+            cypher = (
+                "MATCH (c:Concept {source_label: $sl}) "
+                "OPTIONAL MATCH (c)-[r:RELATED]-(n:Concept {source_label: $sl}) "
+                "WITH c, n, r ORDER BY r.weight DESC "
+                "WITH c, collect({label: n.label, weight: r.weight})[..5] AS nbs "
+                "RETURN c.id AS id, c.label AS label, "
+                "       coalesce(c.concept_type, 'concept') AS ctype, "
+                "       coalesce(c.source_type, 'n/a') AS src, nbs"
+            )
+        else:
+            params = {"sl": source_label, "sid": slice_id}
+            cypher = (
+                "MATCH (c:Concept {source_label: $sl, slice_id: $sid}) "
+                "OPTIONAL MATCH (c)-[r:RELATED]-(n:Concept "
+                "                              {source_label: $sl, slice_id: $sid}) "
+                "WITH c, n, r ORDER BY r.weight DESC "
+                "WITH c, collect({label: n.label, weight: r.weight})[..5] AS nbs "
+                "RETURN c.id AS id, c.label AS label, "
+                "       coalesce(c.concept_type, 'concept') AS ctype, "
+                "       coalesce(c.source_type, 'n/a') AS src, nbs"
+            )
+        ids: list[str] = []
+        descs: list[str] = []
+        with self.session() as s:
+            for rec in s.run(cypher, **params):
+                ids.append(str(rec["id"]))
+                top = ", ".join(
+                    n["label"] for n in rec["nbs"] or [] if n and n.get("label")
+                )
+                desc = (
+                    f"{rec['label']}. A {rec['ctype']} concept from "
+                    f"{rec['src']} data."
+                    + (f" Related to: {top}." if top else "")
+                )
+                descs.append(desc)
+        return ids, descs
+
     # ── Edge embeddings ────────────────────────────────────────────
     def embed_edges(
         self,
-        G: nx.DiGraph,
         source_label: str = "combined",
+        slice_id: str | None = None,
         top_n_association: int = 2000,
         model_name: str | None = None,
+        G: nx.DiGraph | None = None,
     ) -> int:
         """Compute and store embeddings for a curated subset of edges.
 
         Strategy (aligned with the Edge Embedding plan):
 
-        * Always embed every edge whose ``verbs`` Counter is non-empty
-          (i.e. produced by the dependency-parsing extractor — ACTION and
-          CAUSATION edges).
-        * Additionally embed the top ``top_n_association`` ASSOCIATION-only
-          edges by weight, to give the chatbot a useful background layer
-          for co-occurrence queries.
+        * Always embed every edge whose ``top_verb`` is non-empty (i.e.
+          ACTION + CAUSATION edges from the dependency parser).
+        * Additionally embed the top ``top_n_association`` association-only
+          edges (no verb) by weight.
 
-        The edge description is intentionally short and verb-aware so that
-        vector similarity captures "who does what to whom" rather than
-        "two words appear together somewhere".
+        Reads edge data directly from Neo4j (so it works in the Neo4j-only
+        pipeline). Legacy ``G`` argument still accepted for backward
+        compatibility.
 
         Returns the number of edges embedded. Returns 0 silently if
         ``sentence-transformers`` is unavailable.
@@ -441,10 +539,79 @@ class Neo4jStore:
             )
             return 0
 
-        if G.number_of_edges() == 0:
-            return 0
+        if G is not None:
+            selected = self._select_edges_from_graph(G, top_n_association)
+            if not selected:
+                return 0
+            descriptions = [
+                _edge_description(G, u, v, data) for (u, v, data) in selected
+            ]
+            payload_keys = [
+                {
+                    "source": str(u),
+                    "target": str(v),
+                    "sl": source_label,
+                    "sid": slice_id,
+                }
+                for (u, v, _d) in selected
+            ]
+        else:
+            descriptions, payload_keys = self._select_edges_from_neo4j(
+                source_label, slice_id, top_n_association
+            )
+            if not payload_keys:
+                return 0
 
-        # Partition edges into "verb" and "assoc-only".
+        model_name = model_name or _cfg.EMBEDDING_MODEL
+        model = SentenceTransformer(model_name)
+        vectors = model.encode(
+            descriptions, convert_to_numpy=True, show_progress_bar=False
+        ).astype("float32")
+
+        # Cypher branches differ on whether we filter by slice_id.
+        with_slice = slice_id is not None
+        if with_slice:
+            cypher = (
+                "UNWIND $rows AS row "
+                "MATCH (a:Concept {id: row.source})"
+                "-[r:RELATED {source_label: row.sl, slice_id: row.sid}]->"
+                "(b:Concept {id: row.target}) "
+                "CALL db.create.setRelationshipVectorProperty(r, 'embedding', row.vec) "
+                "RETURN count(*)"
+            )
+        else:
+            cypher = (
+                "UNWIND $rows AS row "
+                "MATCH (a:Concept {id: row.source})"
+                "-[r:RELATED {source_label: row.sl}]->"
+                "(b:Concept {id: row.target}) "
+                "CALL db.create.setRelationshipVectorProperty(r, 'embedding', row.vec) "
+                "RETURN count(*)"
+            )
+
+        with self.session() as s:
+            for batch_start in range(0, len(payload_keys), _EMBED_BATCH):
+                batch = payload_keys[batch_start : batch_start + _EMBED_BATCH]
+                batch_vecs = vectors[batch_start : batch_start + _EMBED_BATCH]
+                payload = []
+                for key, vec in zip(batch, batch_vecs):
+                    item = dict(key)
+                    item["vec"] = vec.tolist()
+                    payload.append(item)
+                s.run(cypher, rows=payload)
+
+        logger.info(
+            "Neo4j: stored %d edge embeddings for source_label=%s slice_id=%s",
+            len(payload_keys),
+            source_label,
+            slice_id,
+        )
+        return len(payload_keys)
+
+    @staticmethod
+    def _select_edges_from_graph(
+        G: nx.DiGraph, top_n_association: int
+    ) -> list[tuple[Any, Any, dict[str, Any]]]:
         verb_edges: list[tuple[Any, Any, dict[str, Any]]] = []
         assoc_edges: list[tuple[Any, Any, dict[str, Any]]] = []
         for u, v, data in G.edges(data=True):
@@ -459,62 +626,110 @@ class Neo4jStore:
                 verb_edges.append((u, v, data))
             else:
                 assoc_edges.append((u, v, data))
-
         assoc_edges.sort(
             key=lambda tup: float(tup[2].get("weight", 0) or 0),
             reverse=True,
         )
-        selected = verb_edges + assoc_edges[: max(0, int(top_n_association))]
-        if not selected:
-            return 0
+        return verb_edges + assoc_edges[: max(0, int(top_n_association))]
 
-        model_name = model_name or _cfg.EMBEDDING_MODEL
-        model = SentenceTransformer(model_name)
+    def _select_edges_from_neo4j(
+        self,
+        source_label: str,
+        slice_id: str | None,
+        top_n_association: int,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Stream candidate edges out of Neo4j and build descriptions.
 
-        descriptions = [
-            _edge_description(G, u, v, data) for (u, v, data) in selected
-        ]
-        vectors = model.encode(
-            descriptions, convert_to_numpy=True, show_progress_bar=False
-        ).astype("float32")
+        Returns (descriptions, payload_keys) where payload_keys carry the
+        match parameters (source/target/source_label/slice_id) the writer
+        needs to relocate each edge for the embedding update.
+        """
+        params: dict[str, Any] = {"sl": source_label, "n": int(top_n_association)}
+        slice_filter = ""
+        if slice_id is not None:
+            slice_filter = " AND r.slice_id = $sid"
+            params["sid"] = slice_id
 
-        with self.session() as s:
-            for batch_start in range(0, len(selected), _EMBED_BATCH):
-                batch = selected[batch_start : batch_start + _EMBED_BATCH]
-                batch_vecs = vectors[batch_start : batch_start + _EMBED_BATCH]
-                payload = [
-                    {
-                        "source": str(u),
-                        "target": str(v),
-                        "sl": source_label,
-                        "vec": vec.tolist(),
-                    }
-                    for (u, v, _d), vec in zip(batch, batch_vecs)
-                ]
-                s.run(
-                    "UNWIND $rows AS row "
-                    "MATCH (a:Concept {id: row.source})"
-                    "-[r:RELATED {source_label: row.sl}]->"
-                    "(b:Concept {id: row.target}) "
-                    "CALL db.create.setRelationshipVectorProperty(r, 'embedding', row.vec) "
-                    "RETURN count(*)",
-                    rows=payload,
-                )
-
-        logger.info(
-            "Neo4j: stored %d edge embeddings (%d verb + %d assoc top-N) for source_label=%s",
-            len(selected),
-            len(verb_edges),
-            max(0, len(selected) - len(verb_edges)),
-            source_label,
+        # Verb edges first (always included).
+        verb_q = (
+            "MATCH (a:Concept)-[r:RELATED]->(b:Concept) "
+            "WHERE r.source_label = $sl AND coalesce(r.top_verb, '') <> ''"
+            + slice_filter
+            + " RETURN a.id AS sid, b.id AS tid, "
+            "        a.label AS slabel, b.label AS tlabel, "
+            "        r.top_verb AS verb, r.sentiment AS sentiment, "
+            "        r.weight AS weight"
         )
-        return len(selected)
+        # Then assoc edges by descending weight, capped.
+        assoc_q = (
+            "MATCH (a:Concept)-[r:RELATED]->(b:Concept) "
+            "WHERE r.source_label = $sl "
+            "  AND (r.top_verb IS NULL OR r.top_verb = '')"
+            + slice_filter
+            + " RETURN a.id AS sid, b.id AS tid, "
+            "        a.label AS slabel, b.label AS tlabel, "
+            "        null AS verb, r.sentiment AS sentiment, r.weight AS weight "
+            "ORDER BY r.weight DESC LIMIT $n"
+        )
+
+        descriptions: list[str] = []
+        keys: list[dict[str, Any]] = []
+        with self.session() as s:
+            for rec in s.run(verb_q, **params):
+                descriptions.append(_edge_description_from_row(rec))
+                keys.append(
+                    {
+                        "source": str(rec["sid"]),
+                        "target": str(rec["tid"]),
+                        "sl": source_label,
+                        "sid": slice_id,
+                    }
+                )
+            if int(top_n_association) > 0:
+                for rec in s.run(assoc_q, **params):
+                    descriptions.append(_edge_description_from_row(rec))
+                    keys.append(
+                        {
+                            "source": str(rec["sid"]),
+                            "target": str(rec["tid"]),
+                            "sl": source_label,
+                            "sid": slice_id,
+                        }
+                    )
+        return descriptions, keys
 
 
 # ── Helpers ────────────────────────────────────────────────────────
 def _chunks(seq: list[Any], size: int) -> Iterable[list[Any]]:
     for i in range(0, len(seq), size):
         yield seq[i : i + size]
+
+
+def _edge_description_from_row(rec: Any) -> str:
+    """Verb-aware short description from a Cypher row.
+
+    Mirrors :func:`_edge_description` but consumes a Neo4j ``Record``
+    directly (so the embedder works without an in-memory graph).
+    """
+    src = rec["slabel"]
+    tgt = rec["tlabel"]
+    verb = rec.get("verb") if hasattr(rec, "get") else rec["verb"]
+    sentiment = (
+        rec.get("sentiment") if hasattr(rec, "get") else rec["sentiment"]
+    )
+    if verb:
+        tail = ""
+        if sentiment is not None:
+            try:
+                sentf = float(sentiment)
+                if sentf > 0.15:
+                    tail = " (positive tone)"
+                elif sentf < -0.15:
+                    tail = " (negative tone)"
+            except (TypeError, ValueError):
+                pass
+        return f"{src} {verb} {tgt}{tail}."
+    return f"{src} co-occurs with {tgt}."
 
 
 def _edge_description(G: nx.DiGraph, u: Any, v: Any, data: dict[str, Any]) -> str:

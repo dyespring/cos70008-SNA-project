@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Text-to-Network Engine — Dashboard Introduction</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --muted: #5b6172;
+    --accent: #4363d8;
+    --accent-2: #7b61ff;
+    --card-bg: #f8f9fc;
+    --card-bg-2: #eef2ff;
+    --border: #e0e4ec;
+    --code-bg: #f0f2f6;
+    --tab-summary:  #4363d8;
+    --tab-network:  #42d4f4;
+    --tab-insights: #f58231;
+    --tab-central:  #7b61ff;
+    --tab-comms:    #3cb44b;
+    --tab-brokers:  #e6194b;
+    --tab-temporal: #911eb4;
+    --tab-chat:     #c23b8e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.65;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  .hero {
+    background: linear-gradient(135deg, #4363d8 0%, #7b61ff 100%);
+    color: #fff;
+    padding: 1.8rem 2rem 1.6rem;
+    border-radius: 14px;
+    margin-bottom: 2rem;
+    box-shadow: 0 8px 24px rgba(67, 99, 216, 0.18);
+  }
+  .hero .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.78rem;
+    opacity: 0.85;
+    margin-bottom: 0.4rem;
+  }
+  .hero h1 { font-size: 2rem; line-height: 1.2; margin-bottom: 0.4rem; }
+  .hero .tagline { font-size: 1.02rem; opacity: 0.95; max-width: 780px; }
+
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.2rem;
+    margin-bottom: 0.9rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.2rem; margin-bottom: 0.4rem; }
+  p, li { margin-bottom: 0.55rem; color: #2b2f3d; }
+  ul { padding-left: 1.3rem; }
+
+  code {
+    background: var(--code-bg);
+    padding: 0.12rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    color: #2b3252;
+  }
+
+  .toc {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.3rem;
+    margin: 1rem 0 2rem;
+  }
+  .toc h3 { margin-top: 0; }
+  .toc ol { padding-left: 1.4rem; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.3rem;
+    margin: 0.9rem 0;
+  }
+
+  .tab-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+    margin: 1.2rem 0 0.5rem;
+  }
+  @media (max-width: 760px) { .tab-grid { grid-template-columns: 1fr; } }
+
+  .tab-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-left: 5px solid var(--accent);
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+  }
+  .tab-card h3 { margin-top: 0; display: flex; align-items: center; gap: 0.55rem; }
+  .tab-card .num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.8rem;
+    background: var(--accent);
+  }
+  .tab-card .who { color: var(--muted); font-size: 0.88rem; margin-top: 0.15rem; }
+  .tab-card ul  { margin-top: 0.55rem; }
+  .tab-card li  { margin-bottom: 0.35rem; }
+
+  .t-summary  { border-left-color: var(--tab-summary); }   .t-summary .num  { background: var(--tab-summary); }
+  .t-network  { border-left-color: var(--tab-network); }   .t-network .num  { background: var(--tab-network); color:#1a1a2e; }
+  .t-insights { border-left-color: var(--tab-insights); }  .t-insights .num { background: var(--tab-insights); }
+  .t-central  { border-left-color: var(--tab-central); }   .t-central .num  { background: var(--tab-central); }
+  .t-comms    { border-left-color: var(--tab-comms); }     .t-comms .num    { background: var(--tab-comms); }
+  .t-brokers  { border-left-color: var(--tab-brokers); }   .t-brokers .num  { background: var(--tab-brokers); }
+  .t-temporal { border-left-color: var(--tab-temporal); }  .t-temporal .num { background: var(--tab-temporal); }
+  .t-chat     { border-left-color: var(--tab-chat); }      .t-chat .num     { background: var(--tab-chat); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+  }
+  th, td {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--card-bg); font-weight: 600; }
+  tr:nth-child(even) { background: #fafbfd; }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+  }
+
+  .links a { color: var(--accent); text-decoration: none; margin-right: 0.8rem; }
+  .links a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="eyebrow">Dashboard Introduction</div>
+  <h1>Text-to-Network Engine — Dashboard at a glance</h1>
+  <p class="tagline">
+    A one-page introduction to the Streamlit dashboard that sits on top of the
+    Neo4j conceptual network: what each of the eight tabs is for, who it is
+    aimed at, and the quickest way to read it.
+  </p>
+</div>
+
+<!-- ─────────────── OVERVIEW ─────────────── -->
+<h2 id="overview">1. What this dashboard is</h2>
+<p>
+  The dashboard is the analyst-facing front end of the
+  <strong>Text-to-Network Engine</strong>. The pipeline (<code>pipeline.py</code>)
+  extracts concepts and relationships from unstructured text (policy documents,
+  Yelp reviews, or a combined corpus), writes them into <strong>Neo4j</strong>,
+  and runs Graph Data Science (GDS) algorithms server-side. The dashboard
+  reads everything back through Cypher and presents it as eight focused tabs.
+</p>
+
+<div class="card">
+  <h3>How to launch</h3>
+  <p>From the project root, after Neo4j is up and the pipeline has been run:</p>
+  <ul>
+    <li><code>python -m streamlit run src/extensions/dashboard.py</code></li>
+    <li>Pick a <strong>source</strong> in the sidebar — <code>policy</code>,
+        <code>yelp</code>, or <code>combined</code>.</li>
+    <li>Optionally set an <code>LLM_PROVIDER</code> in <code>.env</code> to enable
+        the "Polish with LLM" buttons; otherwise everything still works in
+        deterministic mode.</li>
+  </ul>
+</div>
+
+<div class="toc">
+  <h3>Tabs in this dashboard</h3>
+  <ol>
+    <li><a href="#tab-summary">Summary</a> — executive snapshot</li>
+    <li><a href="#tab-network">Network</a> — the live graph itself</li>
+    <li><a href="#tab-insights">Insights</a> — Key / Risk / Action cards</li>
+    <li><a href="#tab-central">Centrality</a> — who is influential, and how</li>
+    <li><a href="#tab-comms">Communities</a> — themes inside the network</li>
+    <li><a href="#tab-brokers">Brokers</a> — concepts that bridge themes</li>
+    <li><a href="#tab-temporal">Temporal</a> — how the story changes over time</li>
+    <li><a href="#tab-chat">Chat</a> — conversational Q&amp;A grounded in the graph</li>
+  </ol>
+</div>
+
+<!-- ─────────────── TAB CARDS ─────────────── -->
+<h2 id="tabs">2. Each tab, in one card</h2>
+
+<div class="tab-grid">
+
+  <!-- 1. Summary -->
+  <div class="tab-card t-summary" id="tab-summary">
+    <h3><span class="num">1</span> Summary</h3>
+    <p class="who">For: anyone — a one-screen snapshot for stakeholders.</p>
+    <p><strong>What it shows.</strong> Headline counts of concepts and
+       relationships, network density, average clustering, and the number of
+       weakly-connected components. On <code>combined</code> data it also
+       breaks down concept counts by corpus (policy / Yelp / shared).</p>
+    <p><strong>Purpose.</strong> Give a 10-second answer to “how big is the
+       network and how connected is it?”, then point readers at the
+       <em>Insights</em> tab for the full card deck.</p>
+  </div>
+
+  <!-- 2. Network -->
+  <div class="tab-card t-network" id="tab-network">
+    <h3><span class="num">2</span> Network</h3>
+    <p class="who">For: visual analysts — explore the live graph in the browser.</p>
+    <p><strong>What it shows.</strong> An interactive <strong>vis-network</strong>
+       canvas rendered straight from Neo4j (no NetworkX rebuild). Controls let
+       you change Top-N, ranking metric (PageRank, betweenness, degree…), edge
+       weight cut-off, colour-by (community or source), the temporal slice,
+       and the physics solver.</p>
+    <p><strong>Purpose.</strong> A scoped, high-impact subgraph you can pan,
+       zoom and inspect — without dumping the entire database into the
+       browser.</p>
+  </div>
+
+  <!-- 3. Insights -->
+  <div class="tab-card t-insights" id="tab-insights">
+    <h3><span class="num">3</span> Insights</h3>
+    <p class="who">For: decision-makers — narrative findings, not raw tables.</p>
+    <p><strong>What it shows.</strong> Three columns of insight cards driven by
+       Cypher over the GDS metrics already on each node:</p>
+    <ul>
+      <li><strong>Key</strong> — descriptive (hubs, bridges, isolated clusters,
+          cross-source overlap).</li>
+      <li><strong>Risk</strong> — diagnostic (single points of failure, echo
+          chambers, negative-sentiment clusters, fragmentation).</li>
+      <li><strong>Action</strong> — prescriptive (diversify, leverage bridges,
+          investigate isolates).</li>
+    </ul>
+    <p>An optional <em>Polish with LLM</em> toggle rewrites each card in
+       executive-friendly language.</p>
+    <p><strong>Purpose.</strong> Turn graph metrics into actionable
+       observations a non-technical audience can read.</p>
+  </div>
+
+  <!-- 4. Centrality -->
+  <div class="tab-card t-central" id="tab-central">
+    <h3><span class="num">4</span> Centrality</h3>
+    <p class="who">For: analysts asking “who matters?”.</p>
+    <p><strong>What it shows.</strong> Leaderboards under five lenses
+       (PageRank, betweenness, degree, closeness, eigenvector) plus a
+       two-axis scatter to spot concepts that score high on more than one.
+       An optional LLM blurb turns the tables into a short brief.</p>
+    <p><strong>Purpose.</strong> Identify which concepts are
+       <em>popular</em>, <em>load-bearing</em>, or <em>both</em> — the kind of
+       vocabulary worth a closer look in a meeting.</p>
+  </div>
+
+  <!-- 5. Communities -->
+  <div class="tab-card t-comms" id="tab-comms">
+    <h3><span class="num">5</span> Communities</h3>
+    <p class="who">For: analysts mapping themes.</p>
+    <p><strong>What it shows.</strong> Louvain communities with two anchor
+       lists per cluster (top by frequency vs. top by PageRank), a size
+       distribution, optional <em>cohesion</em> (how self-contained a theme
+       is), and a drill-down: members, sample internal edges, and which other
+       communities a cluster reaches.</p>
+    <p><strong>Purpose.</strong> See the conversation themes hidden in the
+       text and how porous or self-contained each one is.</p>
+  </div>
+
+  <!-- 6. Brokers -->
+  <div class="tab-card t-brokers" id="tab-brokers">
+    <h3><span class="num">6</span> Brokers</h3>
+    <p class="who">For: anyone hunting bridge vocabulary.</p>
+    <p><strong>What it shows.</strong> Concepts ranked by
+       <code>betweenness × cross_community_edges</code> — the “bilingual”
+       ideas that link one Louvain community to another. A drill-down shows
+       a broker’s home community, which clusters it reaches, and its
+       strongest cross-community edges. On <code>combined</code> data there
+       is also a second list of concepts whose neighbours span policy and
+       Yelp corpora.</p>
+    <p><strong>Purpose.</strong> Surface the vocabulary that connects
+       otherwise separate storylines — often the most interesting concepts
+       in a network.</p>
+  </div>
+
+  <!-- 7. Temporal -->
+  <div class="tab-card t-temporal" id="tab-temporal">
+    <h3><span class="num">7</span> Temporal</h3>
+    <p class="who">For: anyone tracking change over time.</p>
+    <p><strong>What it shows.</strong> Three angles on slice-tagged subgraphs
+       in Neo4j (built by <code>pipeline.py temporal --source &lt;src&gt; --temporal N</code>):</p>
+    <ul>
+      <li><strong>Trend</strong> — is the network growing, getting denser,
+          shifting sentiment?</li>
+      <li><strong>Drift</strong> — between neighbouring slices, what
+          vocabulary appears, disappears, and how much overlap remains?</li>
+      <li><strong>Comparison</strong> — first vs. last slice, the overall
+          shift.</li>
+    </ul>
+    <p>A <em>Trend explorer</em> below lets you filter slices and metrics for
+       presentations; insight cards can optionally be polished with the LLM.</p>
+    <p><strong>Purpose.</strong> Show how the conceptual landscape evolves —
+       useful for policy timelines or year-on-year Yelp reviews.</p>
+  </div>
+
+  <!-- 8. Chat -->
+  <div class="tab-card t-chat" id="tab-chat">
+    <h3><span class="num">8</span> Chat</h3>
+    <p class="who">For: anyone who wants to ask the graph a question.</p>
+    <p><strong>What it shows.</strong> A chatbot grounded in the Neo4j graph.
+       The router pulls Cypher snippets (top concepts, communities, paths,
+       descriptions) and optional vector hits over node / edge embeddings,
+       then passes them to the configured LLM provider
+       (<code>echo</code>, <code>openai</code>, <code>dashscope</code>,
+       <code>huggingface_api</code>, <code>huggingface_local</code>).</p>
+    <p><strong>Purpose.</strong> Natural-language exploration of the graph —
+       <em>“Who recommended the food?”</em>, <em>“What bridges communities
+       2 and 5?”</em>, <em>“Top concepts by betweenness.”</em> The
+       <code>echo</code> provider is a zero-dependency fallback that returns
+       the retrieved graph context verbatim.</p>
+  </div>
+
+</div>
+
+<!-- ─────────────── PROVENANCE ─────────────── -->
+<h2 id="provenance">3. Where the numbers come from</h2>
+<table>
+  <thead>
+    <tr><th>Tab</th><th>Backed by</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Summary</strong></td>
+        <td>Cypher counts + <code>pipeline.py analyse</code> GDS metrics on <code>:Concept</code>.</td></tr>
+    <tr><td><strong>Network</strong></td>
+        <td><code>cypher_to_vis_json</code> → <code>vis_network_html</code> rendered with vis-network.</td></tr>
+    <tr><td><strong>Insights</strong></td>
+        <td><code>src/extensions/insight_engine.py</code> + optional LLM polish via <code>metric_llm</code>.</td></tr>
+    <tr><td><strong>Centrality</strong></td>
+        <td><code>gds.pageRank</code>, <code>gds.betweenness</code>, <code>gds.closeness</code>, <code>gds.eigenvector</code>, <code>gds.degree</code> written back as node properties.</td></tr>
+    <tr><td><strong>Communities</strong></td>
+        <td><code>gds.louvain</code> + cohesion / drill-down Cypher in <code>neo4j_graph_context</code>.</td></tr>
+    <tr><td><strong>Brokers</strong></td>
+        <td>Cypher: high-betweenness × cross-community edge counts; cross-source bridges on <code>combined</code>.</td></tr>
+    <tr><td><strong>Temporal</strong></td>
+        <td><code>pipeline.py temporal</code> writes <code>slice_id</code> on nodes/edges; <code>temporal_insights.py</code> reads them back.</td></tr>
+    <tr><td><strong>Chat</strong></td>
+        <td><code>chatbot.QueryRouter</code> + <code>Neo4jGraphContext</code> + optional node/edge vector indexes.</td></tr>
+  </tbody>
+</table>
+
+<p class="links">
+  See also:
+  <a href="./pipeline_documentation.html">Pipeline Documentation</a>
+  <a href="./project_brief.html">Project Brief</a>
+  <a href="../README.md">README</a>
+</p>
+
+<footer>
+  Text-to-Network Engine · COS70008 Technology Innovation Project · Industry partner: SNA Toolbox
+</footer>
+
+</body>
+</html>

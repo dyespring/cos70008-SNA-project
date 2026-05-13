@@ -21,6 +21,8 @@
     --stage4: #f58231;
     --stage5: #3cb44b;
     --stage6: #42d4f4;
+    --stage7: #911eb4;
+    --stage8: #c23b8e;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -105,6 +107,8 @@
   .s4 { border-color: var(--stage4); }  .s4 .num { background: var(--stage4); }
   .s5 { border-color: var(--stage5); }  .s5 .num { background: var(--stage5); }
   .s6 { border-color: var(--stage6); }  .s6 .num { background: var(--stage6); }
+  .s7 { border-color: var(--stage7); }  .s7 .num { background: var(--stage7); }
+  .s8 { border-color: var(--stage8); }  .s8 .num { background: var(--stage8); }
 
   .mermaid { margin: 1.5rem 0; text-align: center; }
 
@@ -151,9 +155,11 @@
 <div class="card toc">
   <h3>Contents</h3>
   <ol>
+    <li><a href="./dashboard_introduction.html">Dashboard Introduction</a> (separate page)</li>
     <li><a href="#overview">Architecture Overview</a></li>
     <li><a href="#data-flow">End-to-End Data Flow</a></li>
-    <li><a href="#stages">Pipeline Stages (1–6)</a></li>
+    <li><a href="#stages">Pipeline stages (1–6) &amp; commands (7–8)</a></li>
+    <li><a href="#stages-downstream">Temporal &amp; chat (detail)</a></li>
     <li><a href="#modules">Module Reference</a></li>
     <li><a href="#combined">Combined Mode &amp; Cross-Source Analysis</a></li>
     <li><a href="#cli">CLI Arguments</a></li>
@@ -179,27 +185,33 @@ graph TB
         S1["Stage 1<br/>Ingestion"]
         S2["Stage 2<br/>Preprocessing"]
         S3["Stage 3<br/>Extraction"]
-        S4["Stage 4<br/>Network Construction"]
-        S5["Stage 5<br/>Analysis"]
+        S4["Stage 4<br/>Write to Neo4j"]
+        S5["Stage 5<br/>GDS Analyse"]
         S6["Stage 6<br/>Visualisation"]
+        S7["Stage 7<br/>Temporal"]
+        S8["Stage 8<br/>Chat"]
     end
 
-    subgraph Output["📊 Results"]
-        CSV["CSV Files"]
-        GRAPHML["GraphML"]
+    subgraph Store["💾 Neo4j 5 (single source of truth)"]
+        DB[("(:Concept)-[:RELATED]-&gt;<br/>+ embeddings + GDS metrics")]
+    end
+
+    subgraph Output["📊 Outputs"]
         PNG["PNG Charts"]
-        HTML["Interactive HTML"]
-        JSON["JSON Summary"]
+        HTML["Interactive HTML<br/><small>viz: pyvis</small>"]
+        CSV["CSV (--export-csv, optional)"]
     end
 
     PDF --> S1
     YELP --> S1
-    S1 --> S2 --> S3 --> S4 --> S5 --> S6
-    S5 --> CSV
-    S4 --> GRAPHML
+    S1 --> S2 --> S3 --> S4 --> DB
+    DB --> S5 --> DB
+    DB --> S6
     S6 --> PNG
     S6 --> HTML
-    S5 --> JSON
+    S6 --> CSV
+    DB --> S7 --> DB
+    DB --> S8
 
     style Input fill:#e8f0fe,stroke:#4363d8,color:#1a1a2e
     style Pipeline fill:#fff3e0,stroke:#f58231,color:#1a1a2e
@@ -231,19 +243,22 @@ flowchart LR
         C2 --> C4["Relationship[]<br/><small>src, tgt, weight,<br/>type, directed</small>"]
     end
 
-    subgraph Build["Stage 4: Build"]
-        D1["GraphBuilder<br/><small>NetworkX DiGraph</small>"]
-        D1 --> D2["DiGraph<br/><small>nodes + edges<br/>with attributes</small>"]
+    subgraph Build["Stage 4: Write to Neo4j"]
+        D1["Neo4jGraphWriter<br/><small>Cypher UNWIND</small>"]
+        D1 --> D2[("Neo4j<br/><small>(:Concept)-[:RELATED]-&gt;</small>")]
     end
 
-    subgraph Analyse["Stage 5: Analyse"]
-        E1["GraphAnalyser"]
-        E1 --> E2["Centralities<br/>Communities<br/>Brokers<br/>Cross-source"]
+    subgraph Analyse["Stage 5: GDS Analyse"]
+        E1["GdsAnalysisRunner<br/><small>pageRank, louvain,<br/>betweenness, wcc</small>"]
+        E1 --> E2["Metrics written back<br/>onto Neo4j nodes"]
     end
 
     subgraph Visualise["Stage 6: Visualise"]
+        F0["cypher_to_nx<br/><small>top-N subgraph</small>"]
         F1["StaticVisualiser<br/><small>matplotlib</small>"]
         F2["InteractiveVisualiser<br/><small>pyvis</small>"]
+        F0 --> F1
+        F0 --> F2
     end
 
     A2 --> B1
@@ -253,8 +268,8 @@ flowchart LR
     C3 --> D1
     C4 --> D1
     D2 --> E1
-    D2 --> F1
-    D2 --> F2
+    E2 --> F0
+    D2 --> F0
 
     style Ingest fill:#e8f0fe,stroke:#4363d8
     style Preprocess fill:#f3e8ff,stroke:#7b61ff
@@ -265,13 +280,14 @@ flowchart LR
 </div>
 
 <!-- ───── 3. PIPELINE STAGES ───── -->
-<h2 id="stages">3. Pipeline Stages (1–6)</h2>
+<h2 id="stages">3. Pipeline stages (1–6) + commands (7–8)</h2>
+<p style="color:#555;font-size:0.95rem;margin-top:-0.5rem;margin-bottom:1.2rem;">Stages 1–6 are the core batch path. Stages 7–8 are separate CLI subcommands that extend or query data already in Neo4j.</p>
 
 <div class="stage-grid">
 
 <div class="stage-card s1">
   <h3><span class="num">1</span> Ingestion</h3>
-  <p><strong>Lines 26–59</strong> in <code>pipeline.py</code></p>
+  <p><strong><code>_load_documents()</code></strong> in <code>pipeline.py</code></p>
   <ul>
     <li><strong>Policy:</strong> <code>pdf_reader.read_policy_pdf()</code> extracts text per page using <code>pdfplumber</code>, strips headers/footers</li>
     <li><strong>Yelp:</strong> <code>yelp_reader.load_yelp_reviews()</code> reads extracted JSONL, filters by category, samples N reviews</li>
@@ -281,7 +297,7 @@ flowchart LR
 
 <div class="stage-card s2">
   <h3><span class="num">2</span> Preprocessing</h3>
-  <p><strong>Lines 61–64</strong> (summary), cleaning + tokenisation happen during ingestion</p>
+  <p>Same path as stage 1: <strong><code>_load_documents()</code></strong> applies cleaning then spaCy tokenisation</p>
   <ul>
     <li><code>clean_text()</code> — removes URLs, emails, Unicode artefacts, policy-specific noise</li>
     <li><code>SpacyTokeniser</code> — tokenises, lemmatises, tags POS, extracts NER entities &amp; noun chunks</li>
@@ -291,46 +307,73 @@ flowchart LR
 
 <div class="stage-card s3">
   <h3><span class="num">3</span> Extraction</h3>
-  <p><strong>Lines 66–84</strong></p>
+  <p><strong><code>cmd_etl()</code></strong> · <code>src/extraction/</code></p>
   <ul>
     <li><strong>ConceptExtractor</strong> — 3 strategies: Named Entity Recognition, Noun-Phrase chunking, TF-IDF keywords</li>
     <li>Each concept tracks <code>source_origins</code> → knows if it came from policy, yelp, or both</li>
     <li><strong>RelationshipExtractor</strong> — co-occurrence windows + dependency parsing; classifies as ASSOCIATION / ACTION / CAUSATION</li>
+    <li>Optional: <strong><code>advanced.refine_concepts()</code></strong> when <code>--advanced-extraction</code> is set (<code>src/extraction/advanced.py</code>)</li>
   </ul>
 </div>
 
 <div class="stage-card s4">
-  <h3><span class="num">4</span> Network Construction</h3>
-  <p><strong>Lines 86–96</strong></p>
+  <h3><span class="num">4</span> Write to Neo4j</h3>
+  <p><strong><code>pipeline.py etl</code></strong> · <code>src/network/neo4j_writer.py</code></p>
   <ul>
-    <li><code>GraphBuilder</code> creates a <code>NetworkX DiGraph</code> from concepts (nodes) and relationships (edges)</li>
-    <li>Edges below <code>--min-weight</code> are pruned</li>
-    <li>Parallel edges of different types are aggregated</li>
-    <li>Exports: <code>network.graphml</code>, <code>edges.csv</code>, <code>nodes.csv</code></li>
+    <li><code>Neo4jGraphWriter</code> upserts <code>Concept[]</code> and <code>Relationship[]</code> via batched Cypher <code>UNWIND</code></li>
+    <li>Edges below <code>--min-weight</code> are pruned before the write</li>
+    <li>Parallel edges of different types are aggregated; verb counters preserved as <code>r.top_verb / r.verb_count / r.verb_list</code></li>
+    <li>Scoped per <code>source_label</code> (and optional <code>slice_id</code>) so multiple datasets coexist in one database</li>
+    <li>Optional CSV dumps via <code>--export-csv</code> on the <code>viz</code> / <code>temporal</code> subcommands</li>
   </ul>
 </div>
 
 <div class="stage-card s5">
-  <h3><span class="num">5</span> Analysis</h3>
-  <p><strong>Lines 98–152</strong></p>
+  <h3><span class="num">5</span> GDS Analysis (server-side)</h3>
+  <p><strong><code>pipeline.py analyse</code></strong> · <code>src/network/gds_analyser.py</code></p>
   <ul>
-    <li><strong>Centrality:</strong> degree, betweenness, closeness, eigenvector, PageRank</li>
-    <li><strong>Communities:</strong> Louvain (preferred) or label propagation</li>
-    <li><strong>Brokerage:</strong> nodes bridging communities</li>
-    <li><strong>Cross-source</strong> (combined mode): overlap %, bridging concepts, cross-source edges</li>
+    <li><strong>Centrality:</strong> <code>gds.degree.write</code>, <code>gds.pageRank.write</code>, <code>gds.betweenness.write</code>, <code>gds.closeness.write</code>, <code>gds.eigenvector.write</code></li>
+    <li><strong>Communities:</strong> <code>gds.louvain.write</code> (writes <code>c.community</code>); <code>gds.wcc.write</code> for weakly-connected components</li>
+    <li><strong>Brokerage:</strong> Cypher-only — high-betweenness nodes whose neighbours span multiple communities</li>
+    <li><strong>Cross-source</strong> (combined mode): overlap %, bridging concepts, cross-source edges via Cypher aggregations</li>
+    <li>Each algorithm projects an in-memory graph scoped per <code>source_label</code>, runs, writes back, then drops the projection</li>
   </ul>
 </div>
 
 <div class="stage-card s6">
   <h3><span class="num">6</span> Visualisation</h3>
-  <p><strong>Lines 154–182</strong></p>
+  <p><strong><code>pipeline.py viz</code></strong> · <code>src/visualisation/cypher_to_nx.py</code></p>
   <ul>
+    <li><code>fetch_subgraph()</code> pulls the top-N nodes by PageRank (and the edges between them) back into a transient <code>nx.DiGraph</code> for rendering</li>
     <li><strong>Static:</strong> network graph, top concepts bar chart, community distribution, co-occurrence heatmap, source-coloured network, source overlap chart</li>
-    <li><strong>Interactive:</strong> pyvis HTML network with hover tooltips, zoom, drag</li>
+    <li><strong>Interactive:</strong> pyvis HTML network with hover tooltips, zoom, drag (written to <code>results/</code> by <code>viz</code>)</li>
     <li>Combined mode colours nodes by source: <span class="tag tag-policy">Policy</span> <span class="tag tag-yelp">Yelp</span> <span class="tag tag-both">Both</span></li>
+    <li>The Streamlit dashboard’s in-app graph uses <strong>vis-network</strong> (<code>vis_network_html.py</code>), not this pyvis file — same Neo4j data, different renderer.</li>
   </ul>
 </div>
 
+</div>
+
+<h3 id="stages-downstream">3b. Commands — stage 7 (temporal) &amp; stage 8 (chat)</h3>
+<div class="stage-grid">
+<div class="stage-card s7">
+  <h3><span class="num">7</span> Temporal comparison</h3>
+  <p><strong><code>pipeline.py temporal</code></strong> · <code>src/extensions/temporal.py</code> (+ insights in <code>temporal_insights.py</code>)</p>
+  <ul>
+    <li>Splits the corpus into <code>N</code> time-ordered slices; writes subgraphs scoped by <code>slice_id</code> on nodes and edges</li>
+    <li>Runs GDS per slice unless <code>--skip-gds</code> (faster iteration; some dashboard temporal cards fall back to frequency-only)</li>
+    <li>Pairwise overlap / Jaccard style metrics via Cypher; optional CSV via <code>--export-csv</code></li>
+  </ul>
+</div>
+<div class="stage-card s8">
+  <h3><span class="num">8</span> Chatbot (LLM / RAG)</h3>
+  <p><strong><code>pipeline.py chat</code></strong> · <code>chat.py</code> · <code>src/extensions/chatbot.py</code></p>
+  <ul>
+    <li><code>Neo4jGraphContext</code> supplies Cypher-backed snippets; optional <code>Neo4jVectorStore</code> + <code>Neo4jEdgeVectorStore</code> when <code>--vector-store</code></li>
+    <li>Pluggable LLM providers (<code>LLM_PROVIDER</code> env); <code>--provider</code> overrides for a single session</li>
+    <li>Delegates the interactive loop to <code>chat.py</code> — same grounding model as the dashboard Chat tab</li>
+  </ul>
+</div>
 </div>
 
 <!-- ───── 4. MODULE REFERENCE ───── -->
@@ -353,28 +396,55 @@ graph TD
     subgraph src/extraction
         CONC["concept_extractor.py<br/><small>ConceptExtractor</small>"]
         REL["relationship_extractor.py<br/><small>RelationshipExtractor</small>"]
+        ADV["advanced.py<br/><small>opt-in refine</small>"]
     end
 
     subgraph src/network
-        BUILD["graph_builder.py<br/><small>GraphBuilder</small>"]
-        ANAL["graph_analysis.py<br/><small>GraphAnalyser</small>"]
+        BUILD["neo4j_writer.py<br/><small>Neo4jGraphWriter</small>"]
+        ANAL["gds_analyser.py<br/><small>GdsAnalysisRunner</small>"]
+    end
+
+    subgraph src/extensions
+        STORE["neo4j_store.py<br/><small>driver, schema,<br/>vector indexes</small>"]
+        CTX["neo4j_graph_context.py<br/><small>chatbot read API</small>"]
+        VS["neo4j_vectorstore.py<br/><small>node vector search</small>"]
+        EVS["neo4j_edge_vectorstore.py<br/><small>edge vector search</small>"]
+        CHATBOT["chatbot.py<br/><small>LLM + router</small>"]
+        DASH["dashboard.py<br/><small>Streamlit UI</small>"]
+        INSE["insight_engine.py<br/><small>SNA insight cards</small>"]
+        METL["metric_llm.py<br/><small>tab blurbs</small>"]
+        TINS["temporal_insights.py<br/><small>slice narratives</small>"]
     end
 
     subgraph src/visualisation
+        ADAPT["cypher_to_nx.py<br/><small>fetch_subgraph()</small>"]
         STAT["static_viz.py<br/><small>StaticVisualiser</small>"]
-        INTER["interactive_viz.py<br/><small>InteractiveVisualiser</small>"]
+        INTER["interactive_viz.py<br/><small>pyvis</small>"]
+        VISJ["cypher_to_vis_json.py<br/><small>Neo4j → vis JSON</small>"]
+        VISH["vis_network_html.py<br/><small>vis-network HTML</small>"]
     end
 
     subgraph src/config
-        CONF["config.py<br/><small>paths, params, stop words</small>"]
+        CONF["config.py<br/><small>paths, params, Neo4j env</small>"]
     end
 
     PIPE --> PDF_R & YELP_R
     PIPE --> CLEAN & TOK
     PIPE --> CONC & REL
     PIPE --> BUILD & ANAL
-    PIPE --> STAT & INTER
-    CONF -.-> PDF_R & YELP_R & TOK & CONC & REL & BUILD & STAT & INTER
+    PIPE --> ADAPT & STAT & INTER
+    CONC --> ADV
+    BUILD --> STORE
+    ANAL --> STORE
+    ADAPT --> STORE
+    CTX --> STORE
+    VS --> STORE
+    EVS --> STORE
+    DASH --> STORE
+    DASH --> CTX
+    DASH --> VISJ
+    VISJ --> VISH
+    CONF -.-> PDF_R & YELP_R & TOK & CONC & REL & ADV & BUILD & ANAL & STAT & INTER & STORE & CTX & VS & EVS & CHATBOT & DASH & INSE & METL & TINS & VISJ & VISH
 
     style PIPE fill:#fff3e0,stroke:#f58231,stroke-width:2px
     style CONF fill:#f5f5f5,stroke:#999,stroke-dasharray:5
@@ -421,14 +491,29 @@ graph TD
     <td>Co-occurrence windows + dependency parsing; typed &amp; weighted edges</td>
   </tr>
   <tr>
-    <td><code>src/network/graph_builder.py</code></td>
-    <td><code>GraphBuilder</code></td>
-    <td>Build NetworkX DiGraph, prune by min_weight, export GraphML/CSV</td>
+    <td><code>src/network/neo4j_writer.py</code></td>
+    <td><code>Neo4jGraphWriter</code></td>
+    <td>Direct <code>Concept[]</code> + <code>Relationship[]</code> -&gt; Neo4j via Cypher <code>UNWIND</code>; per-source / per-slice scope</td>
   </tr>
   <tr>
-    <td><code>src/network/graph_analysis.py</code></td>
-    <td><code>GraphAnalyser</code></td>
-    <td>Centrality, community detection, brokerage, cross-source analysis</td>
+    <td><code>src/network/gds_analyser.py</code></td>
+    <td><code>GdsAnalysisRunner</code></td>
+    <td>Server-side SNA via Neo4j GDS (PageRank, Louvain, betweenness, closeness, eigenvector, WCC, local clustering); writes back as node properties</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/neo4j_store.py</code></td>
+    <td><code>Neo4jStore</code></td>
+    <td>Driver lifecycle, schema (constraints + indexes + vector indexes), node + edge embedding writes</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/neo4j_graph_context.py</code></td>
+    <td><code>Neo4jGraphContext</code></td>
+    <td>Cypher-backed read API used by the chatbot; caches a label / metadata dict</td>
+  </tr>
+  <tr>
+    <td><code>src/visualisation/cypher_to_nx.py</code></td>
+    <td><code>fetch_subgraph()</code></td>
+    <td>Pull a top-N subgraph back from Neo4j as a transient <code>nx.DiGraph</code> for rendering</td>
   </tr>
   <tr>
     <td><code>src/visualisation/static_viz.py</code></td>
@@ -436,9 +521,59 @@ graph TD
     <td>matplotlib/seaborn: network graphs, bar charts, heatmaps</td>
   </tr>
   <tr>
-    <td><code>src/visualisation/interactive_viz.py</code></td>
-    <td><code>InteractiveVisualiser</code></td>
-    <td>pyvis interactive HTML network with tooltips</td>
+    <td><code>src/extraction/advanced.py</code></td>
+    <td><code>refine_concepts()</code>, <code>candidate_substring_pairs()</code></td>
+    <td>Optional post-extraction merge of substring-near-duplicate concepts when <code>--advanced-extraction</code> is set</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/neo4j_vectorstore.py</code></td>
+    <td><code>Neo4jVectorStore</code></td>
+    <td>Semantic search over <code>:Concept</code> embeddings via Neo4j native vector index</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/neo4j_edge_vectorstore.py</code></td>
+    <td><code>Neo4jEdgeVectorStore</code></td>
+    <td>Semantic search over <code>[:RELATED]</code> embeddings (verb-aware RAG)</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/chatbot.py</code></td>
+    <td><code>GraphChatbot</code>, <code>QueryRouter</code>, LLM providers</td>
+    <td>Route user questions → Cypher / vector context → LLM answer</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/dashboard.py</code></td>
+    <td>Streamlit multi-tab UI</td>
+    <td>Live Neo4j metrics, temporal tab, chat, optional LLM blurbs / insight cards</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/insight_engine.py</code></td>
+    <td><code>InsightEngine</code>, <code>Insight</code></td>
+    <td>Deterministic SNA insight cards; optional LLM polish</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/metric_llm.py</code></td>
+    <td><code>df_blurb()</code>, <code>stats_blurb()</code></td>
+    <td>Short LLM narratives for dashboard metric tables</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/temporal_insights.py</code></td>
+    <td><code>TemporalInsightEngine</code></td>
+    <td>Temporal-tab comparison narratives from slice metadata</td>
+  </tr>
+  <tr>
+    <td><code>src/extensions/temporal.py</code></td>
+    <td><code>TemporalAnalyser</code> <em>(and helpers)</em></td>
+    <td>Build per-slice subgraphs with <code>slice_id</code>; invoked by <code>pipeline.py temporal</code></td>
+  </tr>
+  <tr>
+    <td><code>src/visualisation/cypher_to_vis_json.py</code></td>
+    <td>Cypher → vis-network JSON</td>
+    <td>Feeds the Streamlit graph component (no pyvis on the hot path)</td>
+  </tr>
+  <tr>
+    <td><code>src/visualisation/vis_network_html.py</code></td>
+    <td><code>render_vis_html()</code></td>
+    <td>Embeds vis-network in HTML for <code>st.components.v1.html</code></td>
   </tr>
 </tbody>
 </table>
@@ -492,104 +627,109 @@ flowchart TD
 </div>
 
 <!-- ───── 6. CLI ARGUMENTS ───── -->
-<h2 id="cli">6. CLI Arguments</h2>
+<h2 id="cli">6. CLI Subcommands &amp; Arguments</h2>
+
+<p>Every invocation takes the form <code>python pipeline.py &lt;subcommand&gt; [options]</code>. Neo4j must be reachable; the pipeline does not run without it.</p>
+
+<table>
+<thead>
+  <tr><th>Subcommand</th><th>Stage(s)</th><th>What it does</th></tr>
+</thead>
+<tbody>
+  <tr><td><code>etl</code></td><td>1–4</td><td>Ingest, preprocess, extract, write to Neo4j. Optional: <code>--reset</code>, <code>--sentiment</code>, <code>--embed</code>.</td></tr>
+  <tr><td><code>analyse</code></td><td>5</td><td>Run GDS algorithms server-side; write metrics back as <code>:Concept</code> properties. Optional: <code>--embed</code>.</td></tr>
+  <tr><td><code>viz</code></td><td>6</td><td>Pull a top-N subgraph from Neo4j and render PNG + HTML. Optional: <code>--top-n</code>, <code>--export-csv</code>.</td></tr>
+  <tr><td><code>temporal</code></td><td>7</td><td>Build per-slice subgraphs (<code>slice_id</code>); compare via Cypher set ops.</td></tr>
+  <tr><td><code>chat</code></td><td>8</td><td>Drop into the chatbot grounded in the Neo4j graph (delegates to <code>chat.py</code>).</td></tr>
+  <tr><td><code>all</code></td><td>1–6 (+7/8 opt)</td><td>Run <code>etl</code> &rarr; <code>analyse</code> &rarr; <code>viz</code>. Add <code>--temporal N</code> with <code>N &gt; 0</code> to run stage 7 after viz. Add <code>--chat</code> (and optional <code>--vector-store</code>, <code>--provider</code>) for an interactive stage-8 session at the end.</td></tr>
+</tbody>
+</table>
 
 <table>
 <thead>
   <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
-  <tr><td><code>--source</code></td><td>choice</td><td><code>policy</code></td><td><code>policy</code>, <code>yelp</code>, or <code>combined</code></td></tr>
-  <tr><td><code>--output</code></td><td>string</td><td><code>results/</code></td><td>Output directory for all results</td></tr>
+  <tr><td><code>--source</code></td><td>choice</td><td><code>combined</code></td><td><code>policy</code>, <code>yelp</code>, or <code>combined</code> — also used as the Neo4j <code>source_label</code></td></tr>
+  <tr><td><code>--output</code></td><td>string</td><td><code>results/</code></td><td>Output directory for PNG / HTML / CSV (when <code>--export-csv</code> is set)</td></tr>
   <tr><td><code>--methods</code></td><td>list</td><td><code>all</code></td><td>Extraction methods: <code>all</code>, <code>ner</code>, <code>np</code>, <code>tfidf</code></td></tr>
-  <tr><td><code>--min-weight</code></td><td>int</td><td><code>1</code></td><td>Minimum co-occurrence count to include an edge</td></tr>
+  <tr><td><code>--min-weight</code></td><td>int</td><td><code>2</code></td><td>Minimum raw co-occurrence count for an edge to be written</td></tr>
   <tr><td><code>--pdf-path</code></td><td>string</td><td>auto</td><td>Path to policy PDF file</td></tr>
   <tr><td><code>--yelp-category</code></td><td>string</td><td><code>Restaurants</code></td><td>Business category filter for Yelp data</td></tr>
   <tr><td><code>--yelp-sample</code></td><td>int</td><td><code>500</code></td><td>Number of reviews to sample (0 = all)</td></tr>
+  <tr><td><code>--reset</code> <em>(etl)</em></td><td>flag</td><td>off</td><td>Wipe existing Concept nodes for this <code>source_label</code> before writing</td></tr>
+  <tr><td><code>--sentiment</code> <em>(etl)</em></td><td>flag</td><td>off</td><td>Annotate edges with VADER/TextBlob sentiment</td></tr>
+  <tr><td><code>--embed</code> <em>(etl/analyse)</em></td><td>flag</td><td>off</td><td>Compute and store sentence-transformer embeddings</td></tr>
+  <tr><td><code>--top-n</code> <em>(viz)</em></td><td>int</td><td><code>200</code></td><td>Maximum nodes to include in the rendered subgraph</td></tr>
+  <tr><td><code>--export-csv</code> <em>(viz/temporal)</em></td><td>flag</td><td>off</td><td>Also dump centralities/communities/brokers/etc. as CSV files</td></tr>
+  <tr><td><code>--temporal</code> <em>(temporal)</em></td><td>int</td><td><code>3</code></td><td>Number of time slices for <code>temporal</code></td></tr>
+  <tr><td><code>--temporal</code> <em>(all)</em></td><td>int</td><td><code>0</code></td><td>Run stage 7 after viz when set to <code>N &gt; 0</code></td></tr>
+  <tr><td><code>--skip-gds</code> <em>(temporal)</em></td><td>flag</td><td>off</td><td>Skip per-slice GDS write-back (faster; some temporal insight cards degrade)</td></tr>
+  <tr><td><code>--vector-store</code> <em>(chat / all)</em></td><td>flag</td><td>off</td><td>Enable Neo4j-backed semantic search (node + optional edge vectors)</td></tr>
+  <tr><td><code>--provider</code> <em>(chat / all)</em></td><td>string</td><td><em>env</em></td><td>Override <code>LLM_PROVIDER</code> for one session</td></tr>
+  <tr><td><code>--edge-embed-top-n</code> <em>(etl / analyse / all)</em></td><td>int</td><td><code>2000</code></td><td>Top-N ASSOCIATION edges to embed in addition to all verb edges</td></tr>
+  <tr><td><code>--advanced-extraction</code> <em>(shared)</em></td><td>flag</td><td>off</td><td>Post-process concepts with substring merge pass (<code>advanced.py</code>)</td></tr>
+  <tr><td><code>--advanced-substring-ratio</code></td><td>float</td><td><code>0.6</code></td><td>Minimum token-overlap ratio for a merge when advanced extraction is on</td></tr>
 </tbody>
 </table>
+
+<p style="font-size:0.9rem;color:#555;margin-top:0.75rem;">Further shared tuning flags (concept frequency, TF-IDF, NPMI, co-occurrence window, concept dictionary, org/product NER floors) are defined on every subcommand that accepts <code>_add_shared_args</code> — see <code>pipeline.py</code> (<code>_add_shared_args</code>) and <code>README.md</code> for defaults that mirror <code>src/config.py</code>.</p>
 
 <!-- ───── 7. OUTPUT FILES ───── -->
 <h2 id="outputs">7. Output Files</h2>
 
-<div class="mermaid">
-graph LR
-    subgraph Data["Data Exports"]
-        N1["nodes.csv"]
-        N2["edges.csv"]
-        N3["yelp_sample.csv"]
-        N4["network.graphml"]
-    end
-
-    subgraph Analysis["Analysis Results"]
-        A1["centralities.csv"]
-        A2["communities.csv"]
-        A3["brokers.csv"]
-    end
-
-    subgraph Cross["Cross-Source<br/>(combined only)"]
-        C1["source_distribution.csv"]
-        C2["cross_source_edges.csv"]
-        C3["bridging_concepts.csv"]
-        C4["cross_source_summary.json"]
-    end
-
-    subgraph Viz["Visualisations"]
-        V1["network_graph.png"]
-        V2["network_by_source.png"]
-        V3["top_concepts.png"]
-        V4["community_distribution.png"]
-        V5["cooccurrence_heatmap.png"]
-        V6["source_overlap.png"]
-        V7["interactive_network.html"]
-    end
-
-    style Data fill:#e8f0fe,stroke:#4363d8
-    style Analysis fill:#e8f5e9,stroke:#3cb44b
-    style Cross fill:#fff3e0,stroke:#f58231
-    style Viz fill:#e0f7fa,stroke:#42d4f4
-</div>
+<p>The graph itself lives in Neo4j — there are no per-run nodes/edges CSV exports unless you opt-in with <code>--export-csv</code>. The visualiser always writes the rendered PNG / HTML files; the CSV / JSON outputs below are only produced when <code>--export-csv</code> is passed to <code>viz</code> or <code>temporal</code>.</p>
 
 <table>
-<thead><tr><th>File</th><th>Description</th><th>Use for</th></tr></thead>
+<thead><tr><th>File</th><th>Produced by</th><th>Description</th></tr></thead>
 <tbody>
-  <tr><td><code>nodes.csv</code></td><td>All concepts: label, type, frequency, source_type</td><td>Concept inventory, filtering</td></tr>
-  <tr><td><code>edges.csv</code></td><td>All edges: source, target, weight, types, source_type</td><td>Relationship analysis</td></tr>
-  <tr><td><code>yelp_sample.csv</code></td><td>Yelp reviews used in this run</td><td>Data provenance, traceability</td></tr>
-  <tr><td><code>network.graphml</code></td><td>Full graph in GraphML format</td><td>Import into Gephi / Cytoscape</td></tr>
-  <tr><td><code>centralities.csv</code></td><td>5 centrality measures per node</td><td>Identify most important concepts</td></tr>
-  <tr><td><code>communities.csv</code></td><td>Detected communities with top members</td><td>Thematic clustering analysis</td></tr>
-  <tr><td><code>brokers.csv</code></td><td>Nodes bridging communities</td><td>Find inter-topic connectors</td></tr>
-  <tr><td><code>cross_source_summary.json</code></td><td>Overlap stats between sources</td><td>High-level cross-domain report</td></tr>
-  <tr><td><code>bridging_concepts.csv</code></td><td>Concepts connecting policy ↔ yelp</td><td>Cross-domain insight discovery</td></tr>
-  <tr><td><code>interactive_network.html</code></td><td>Zoomable, hoverable network</td><td>Exploration, client presentations</td></tr>
-  <tr><td><code>*.png</code></td><td>Static charts</td><td>Reports, presentations</td></tr>
+  <tr><td><code>network_graph.png</code></td><td><code>viz</code></td><td>matplotlib network rendering</td></tr>
+  <tr><td><code>network_by_source.png</code></td><td><code>viz</code> (combined)</td><td>Nodes coloured by source_type</td></tr>
+  <tr><td><code>top_concepts.png</code></td><td><code>viz</code></td><td>Bar chart of top-N concepts by PageRank</td></tr>
+  <tr><td><code>community_distribution.png</code></td><td><code>viz</code></td><td>Community size distribution</td></tr>
+  <tr><td><code>cooccurrence_heatmap.png</code></td><td><code>viz</code></td><td>Top-N concept co-occurrence matrix</td></tr>
+  <tr><td><code>source_overlap.png</code></td><td><code>viz</code> (combined)</td><td>Concept counts per source_type</td></tr>
+  <tr><td><code>interactive_network.html</code></td><td><code>viz</code></td><td>Zoomable, hoverable pyvis network</td></tr>
+  <tr><td><code>centralities.csv</code></td><td><code>viz --export-csv</code></td><td>Centrality measures per node (read from Neo4j)</td></tr>
+  <tr><td><code>communities.csv</code></td><td><code>viz --export-csv</code></td><td>Detected communities with top members</td></tr>
+  <tr><td><code>brokers.csv</code></td><td><code>viz --export-csv</code></td><td>Cypher-derived broker scores</td></tr>
+  <tr><td><code>source_distribution.csv</code> / <code>cross_source_edges.csv</code> / <code>bridging_concepts.csv</code></td><td><code>viz --export-csv</code> (combined)</td><td>Cross-domain summaries</td></tr>
+  <tr><td><code>temporal_slice_summary.csv</code> / <code>temporal_pairwise.csv</code></td><td><code>temporal --export-csv</code></td><td>Per-slice node/edge counts and pairwise jaccard / overlap</td></tr>
 </tbody>
 </table>
 
 <!-- ───── 8. USAGE EXAMPLES ───── -->
 <h2 id="usage">8. Usage Examples</h2>
 
-<pre><code># Combined pipeline — 500 Yelp reviews + policy, min-weight 2
-PYTHONUNBUFFERED=1 venv/bin/python pipeline.py \
-    --source combined --yelp-sample 500 --min-weight 2 \
-    --output results/combined_500
+<pre><code># Bring up Neo4j (one-time per machine)
+docker compose up -d
+
+# Combined pipeline — 500 Yelp reviews + policy, end-to-end
+python pipeline.py all --source combined --reset --embed \
+    --yelp-sample 500 --min-weight 2 --output results/combined_500
 
 # Larger batch — 5000 reviews, stronger edge filter
-PYTHONUNBUFFERED=1 venv/bin/python pipeline.py \
-    --source combined --yelp-sample 5000 --min-weight 3 \
-    --output results/combined_5000
+python pipeline.py all --source combined --reset --embed \
+    --yelp-sample 5000 --min-weight 3 --output results/combined_5000
 
-# Policy only
-venv/bin/python pipeline.py --source policy --output results/policy_only
+# Policy only, with sentiment-weighted edges
+python pipeline.py all --source policy --reset --sentiment \
+    --output results/policy_only
 
 # Yelp only, specific category
-venv/bin/python pipeline.py --source yelp --yelp-sample 1000 \
-    --yelp-category "Food" --output results/yelp_food
+python pipeline.py all --source yelp --reset \
+    --yelp-sample 1000 --yelp-category "Food" --output results/yelp_food
 
 # Use only NER + TF-IDF (skip noun phrases)
-venv/bin/python pipeline.py --source combined --methods ner tfidf \
-    --output results/combined_ner_tfidf</code></pre>
+python pipeline.py etl --source combined --reset --methods ner tfidf
+python pipeline.py analyse --source combined
+python pipeline.py viz --source combined --top-n 200 --export-csv
+
+# Temporal slicing
+python pipeline.py temporal --source combined --temporal 3 --export-csv
+
+# Chat
+python pipeline.py chat --source combined --vector-store</code></pre>
 
 <div class="card">
   <h3>Scaling Guide</h3>

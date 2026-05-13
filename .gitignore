@@ -6,6 +6,7 @@ Innovation_concept/
 
 # IDE / editor state
 .cursor/
+.vscode/
 
 # Local helper scripts with credentials flow
 push_with_token.sh

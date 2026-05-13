@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Text-to-Network Engine — Project Brief</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a2e;
+    --muted: #5b6172;
+    --accent: #4363d8;
+    --accent-2: #7b61ff;
+    --policy: #4363d8;
+    --yelp: #e6194b;
+    --both: #3cb44b;
+    --warn: #f58231;
+    --card-bg: #f8f9fc;
+    --card-bg-2: #eef2ff;
+    --border: #e0e4ec;
+    --code-bg: #f0f2f6;
+    --stage1: #4363d8;
+    --stage2: #7b61ff;
+    --stage3: #e6194b;
+    --stage4: #f58231;
+    --stage5: #3cb44b;
+    --stage6: #42d4f4;
+    --stage7: #911eb4;
+    --stage8: #f032e6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.65;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    background: linear-gradient(135deg, #4363d8 0%, #7b61ff 100%);
+    color: #fff;
+    padding: 2rem 2rem 1.8rem;
+    border-radius: 14px;
+    margin-bottom: 2rem;
+    box-shadow: 0 8px 24px rgba(67, 99, 216, 0.18);
+  }
+  .hero .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.78rem;
+    opacity: 0.85;
+    margin-bottom: 0.4rem;
+  }
+  .hero h1 {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin-bottom: 0.4rem;
+  }
+  .hero .tagline {
+    font-size: 1.05rem;
+    opacity: 0.95;
+    margin-bottom: 1.1rem;
+    max-width: 780px;
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  h2 {
+    font-size: 1.35rem;
+    margin-top: 2.4rem;
+    margin-bottom: 0.9rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid var(--border);
+  }
+  h2 .num {
+    display: inline-block;
+    width: 30px; height: 30px;
+    line-height: 30px;
+    text-align: center;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-right: 0.55rem;
+  }
+  h3 { font-size: 1.05rem; margin-top: 1.2rem; margin-bottom: 0.4rem; }
+  p, li { margin-bottom: 0.55rem; color: #2b2f3d; }
+  ul { padding-left: 1.3rem; }
+
+  code {
+    background: var(--code-bg);
+    padding: 0.12rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    color: #2b3252;
+  }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.3rem;
+    margin: 0.9rem 0;
+  }
+  .card.accent {
+    background: var(--card-bg-2);
+    border-color: #c4cffa;
+  }
+  .card h3 { margin-top: 0; }
+
+  /* ── Two-column ── */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+  }
+  @media (max-width: 760px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* ── Stages ── */
+  .stage-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.75rem;
+    margin: 0.5rem 0;
+  }
+  @media (max-width: 760px) { .stage-grid { grid-template-columns: 1fr; } }
+  .stage {
+    border-left: 5px solid;
+    background: var(--card-bg);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+  }
+  .stage h4 {
+    font-size: 0.95rem;
+    margin: 0 0 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .stage .num {
+    display: inline-flex;
+    width: 24px; height: 24px;
+    align-items: center; justify-content: center;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.78rem;
+  }
+  .stage p { font-size: 0.88rem; color: var(--muted); margin: 0; }
+  .stage.optional { background: #fff8ec; border-color: var(--warn); }
+  .stage.optional p { color: #6a4a18; }
+  .s1 { border-color: var(--stage1); }   .s1 .num { background: var(--stage1); }
+  .s2 { border-color: var(--stage2); }   .s2 .num { background: var(--stage2); }
+  .s3 { border-color: var(--stage3); }   .s3 .num { background: var(--stage3); }
+  .s4 { border-color: var(--stage4); }   .s4 .num { background: var(--stage4); }
+  .s5 { border-color: var(--stage5); }   .s5 .num { background: var(--stage5); }
+  .s6 { border-color: var(--stage6); }   .s6 .num { background: var(--stage6); }
+  .s7 { border-color: var(--stage7); }   .s7 .num { background: var(--stage7); }
+  .s8 { border-color: var(--stage8); }   .s8 .num { background: var(--stage8); }
+
+  /* ── Inline pipeline diagram (CSS only, no JS) ── */
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+    margin: 1rem 0 0.5rem;
+  }
+  .flow .node {
+    background: var(--card-bg);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    padding: 0.45rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+  }
+  .flow .arr { color: var(--muted); font-weight: 700; }
+  .flow .n1 { border-color: var(--stage1); color: var(--stage1); }
+  .flow .n2 { border-color: var(--stage2); color: var(--stage2); }
+  .flow .n3 { border-color: var(--stage3); color: var(--stage3); }
+  .flow .n4 { border-color: var(--stage4); color: var(--stage4); }
+  .flow .n5 { border-color: var(--stage5); color: var(--stage5); }
+  .flow .n6 { border-color: var(--stage6); color: var(--stage6); }
+  .flow .n7 { border-color: var(--stage7); color: var(--stage7); }
+  .flow .n8 { border-color: var(--stage8); color: var(--stage8); }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.6rem 0 0.4rem;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--card-bg); font-weight: 600; }
+  tr:nth-child(even) { background: #fafbfd; }
+
+  .tag {
+    display: inline-block;
+    padding: 0.12rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #fff;
+    margin-right: 0.25rem;
+  }
+  .tag-policy { background: var(--policy); }
+  .tag-yelp   { background: var(--yelp); }
+  .tag-both   { background: var(--both); }
+  .tag-opt    { background: var(--warn); }
+
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 0.4rem 1rem; font-size: 0.92rem; }
+  .kv dt { color: var(--muted); font-weight: 600; }
+  .kv dd { color: var(--fg); }
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- ─────────────────── HERO ─────────────────── -->
+<div class="hero">
+  <div class="eyebrow">COS70008 — Technology Innovation Project · Project Brief</div>
+  <h1>Text-to-Network Engine</h1>
+  <p class="tagline">From Text to Networks: a Neo4j-only conceptual network engine for social network analysis, with server-side GDS analytics and a pluggable LLM/RAG chatbot grounded in the graph.</p>
+  <div class="hero-meta">
+    <span class="pill">Industry partner: SNA Toolbox</span>
+    <span class="pill">Python 3 · spaCy</span>
+    <span class="pill">Neo4j 5 + GDS (single source of truth)</span>
+    <span class="pill">Streamlit dashboard · Chatbot</span>
+  </div>
+</div>
+
+<!-- ─────────────────── 1. SUMMARY ─────────────────── -->
+<h2><span class="num">1</span>Project Summary</h2>
+<p>The <strong>Text-to-Network Engine</strong> is a Python pipeline that transforms unstructured text into <strong>conceptual networks</strong> for social network analysis (SNA). It ingests raw text (policy documents and Yelp reviews), extracts key concepts and their relationships using NLP, writes them straight into <strong>Neo4j</strong> as <code>(:Concept)-[:RELATED]-&gt;(:Concept)</code>, and asks the Neo4j Graph Data Science (GDS) plugin to compute centralities, communities, brokerage and paths server-side. A Streamlit dashboard and an LLM/RAG chatbot read the graph back via Cypher to let analysts explore it interactively.</p>
+
+<div class="grid-3">
+  <div class="card accent">
+    <h3>Problem</h3>
+    <p>Analysts have access to large volumes of unstructured text (policy, reviews, narratives) but few tools to convert that text into structured, queryable conceptual networks suitable for SNA.</p>
+  </div>
+  <div class="card accent">
+    <h3>Solution</h3>
+    <p>An end-to-end, Neo4j-native pipeline that turns documents into a persistent, queryable conceptual graph — and surfaces it through static visuals, an interactive dashboard, and a graph-grounded chatbot, with all SNA computation pushed to the database.</p>
+  </div>
+  <div class="card accent">
+    <h3>Outcome</h3>
+    <p>A reusable engine plus a reference deployment on two distinct corpora (climate policy and consumer reviews), demonstrating cross-domain applicability and cross-source insight extraction.</p>
+  </div>
+</div>
+
+<!-- ─────────────────── 2. SCOPE & DATA ─────────────────── -->
+<h2><span class="num">2</span>Scope &amp; Data Sources</h2>
+<table>
+  <thead>
+    <tr><th>Source</th><th>Description</th><th>Use</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="tag tag-policy">Policy</span></td>
+      <td>Australian National Climate Resilience and Adaptation Strategy (2021–2025) PDF</td>
+      <td>Long-form, structured government text — concepts, themes, causal language</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-yelp">Yelp</span></td>
+      <td>Yelp Open Dataset (academic restaurant review subset, JSONL)</td>
+      <td>Short, opinionated user-generated text — entities, sentiment, opinion structure</td>
+    </tr>
+    <tr>
+      <td><span class="tag tag-both">Combined</span></td>
+      <td>Both corpora processed in one run with a shared concept graph</td>
+      <td>Cross-source comparison, source-specific vs. shared concepts, brokerage</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ─────────────────── 3. PIPELINE ─────────────────── -->
+<h2><span class="num">3</span>Pipeline at a Glance</h2>
+
+<div class="flow">
+  <span class="node n1">1 · Ingest</span><span class="arr">→</span>
+  <span class="node n2">2 · Preprocess</span><span class="arr">→</span>
+  <span class="node n3">3 · Extract</span><span class="arr">→</span>
+  <span class="node n4">4 · Write Neo4j</span><span class="arr">→</span>
+  <span class="node n5">5 · GDS Analyse</span><span class="arr">→</span>
+  <span class="node n6">6 · Visualise</span><span class="arr">→</span>
+  <span class="node n7">7 · Temporal</span><span class="arr">→</span>
+  <span class="node n8">8 · Chatbot</span>
+</div>
+
+<div class="stage-grid">
+  <div class="stage s1">
+    <h4><span class="num">1</span>Data Ingestion</h4>
+    <p>Read policy PDF (<code>pdfplumber</code>) and/or Yelp JSON reviews (<code>pandas</code>).</p>
+  </div>
+  <div class="stage s2">
+    <h4><span class="num">2</span>Preprocessing</h4>
+    <p>Clean, tokenise, lemmatise and filter text with spaCy (<code>en_core_web_sm</code>).</p>
+  </div>
+  <div class="stage s3">
+    <h4><span class="num">3</span>Concept &amp; Relationship Extraction</h4>
+    <p>NER + noun-phrase chunking + TF-IDF; co-occurrence windows, dependency parsing and causal pattern matching.</p>
+  </div>
+  <div class="stage s4">
+    <h4><span class="num">4</span>Write to Neo4j</h4>
+    <p><code>Neo4jGraphWriter</code> upserts <code>(:Concept)-[:RELATED]-&gt;</code> via batched Cypher <code>UNWIND</code> — no in-memory graph.</p>
+  </div>
+  <div class="stage s5">
+    <h4><span class="num">5</span>GDS Analysis (server-side)</h4>
+    <p>Neo4j GDS computes PageRank, Louvain, betweenness, closeness, eigenvector, WCC and local clustering, writing them back as node properties.</p>
+  </div>
+  <div class="stage s6">
+    <h4><span class="num">6</span>Visualisation</h4>
+    <p>Top-N subgraph fetched back via Cypher: static <code>matplotlib</code> plots + interactive <code>pyvis</code> HTML from <code>pipeline.py viz</code>. The Streamlit <strong>Network</strong> tab renders the same database through <strong>vis-network</strong> instead.</p>
+  </div>
+  <div class="stage s7 optional">
+    <h4><span class="num">7</span>Temporal Comparison <span class="tag tag-opt">optional</span></h4>
+    <p>Per-slice subgraphs tagged with a <code>slice_id</code> property; overlap / jaccard computed via Cypher set operations.</p>
+  </div>
+  <div class="stage s8 optional">
+    <h4><span class="num">8</span>Conversational Exploration <span class="tag tag-opt">optional</span></h4>
+    <p>Pluggable LLM/RAG chatbot grounded in the Neo4j graph; semantic search via Neo4j's native node + relationship vector indexes.</p>
+  </div>
+</div>
+
+<!-- ─────────────────── 4. ARCHITECTURE ─────────────────── -->
+<h2><span class="num">4</span>Architecture &amp; Tech Stack</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Core libraries</h3>
+    <ul>
+      <li><strong>spaCy</strong> — tokenisation, lemmatisation, NER, dependency parsing</li>
+      <li><strong>scikit-learn</strong> — TF-IDF concept ranking</li>
+      <li><strong>Neo4j 5</strong> (APOC + GDS) — single source of truth: stores nodes/edges, vector indexes, and runs SNA algorithms server-side</li>
+      <li><strong>matplotlib</strong> + <strong>pyvis</strong> — static PNG + interactive HTML from <code>pipeline.py viz</code> (offline artefacts under <code>results/</code>)</li>
+      <li><strong>vis-network</strong> (via <code>vis_network_html.py</code>) — in-browser graph inside the Streamlit dashboard (same Neo4j data, different renderer than pyvis)</li>
+      <li><strong>Streamlit</strong> — analyst-facing dashboard (Network, Centrality, Communities, Brokers, Temporal, Chat, Summary)</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Optional / extension layers</h3>
+    <ul>
+      <li><strong>VADER / TextBlob</strong> — sentiment-weighted edges (written back as <code>r.sentiment</code>)</li>
+      <li><strong>sentence-transformers</strong> — node + edge embeddings (stored in Neo4j vector indexes)</li>
+      <li><strong>LLM providers</strong> — pluggable: OpenAI, DashScope (Qwen), Hugging Face API, local HF models, or echo fallback</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Repository layout</h3>
+  <div class="kv">
+    <dt><code>pipeline.py</code></dt><dd>CLI entry point with subcommands <code>etl / analyse / viz / temporal / chat / all</code></dd>
+    <dt><code>chat.py</code></dt><dd>Standalone Stage-8 chatbot (reads from Neo4j)</dd>
+    <dt><code>src/ingest/</code></dt><dd>PDF and Yelp readers</dd>
+    <dt><code>src/preprocessing/</code></dt><dd>Text cleaning and spaCy tokenisation</dd>
+    <dt><code>src/extraction/</code></dt><dd>Concept &amp; relationship extractors</dd>
+    <dt><code>src/network/</code></dt><dd><code>neo4j_writer.py</code> (Cypher UNWIND), <code>gds_analyser.py</code> (server-side SNA)</dd>
+    <dt><code>src/visualisation/</code></dt><dd><code>cypher_to_nx.py</code> (CLI subgraph), static + pyvis renderers; <code>cypher_to_vis_json.py</code> + <code>vis_network_html.py</code> for the dashboard graph</dd>
+    <dt><code>src/extensions/</code></dt><dd>Neo4j store, graph context, node/edge vector stores, sentiment, temporal + temporal insights, chatbot, insight engine, metric LLM blurbs, Streamlit dashboard</dd>
+    <dt><code>config/</code></dt><dd>User-editable <code>concept_dictionary.yaml</code></dd>
+    <dt><code>tests/</code></dt><dd>Unit + Neo4j integration tests</dd>
+  </div>
+</div>
+
+<!-- ─────────────────── 5. KEY FEATURES ─────────────────── -->
+<h2><span class="num">5</span>Key Features &amp; Extensions</h2>
+
+<table>
+  <thead>
+    <tr><th>Feature</th><th>What it does</th><th>How to enable</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Neo4j as sole datastore</td>
+      <td>Every node, edge, embedding and metric lives in Neo4j; downstream apps read via Cypher.</td>
+      <td>Always on (required); <code>docker compose up -d</code></td>
+    </tr>
+    <tr>
+      <td>Server-side SNA via GDS</td>
+      <td>PageRank, Louvain, betweenness, WCC etc. run inside Neo4j and write metrics back to nodes.</td>
+      <td><code>python pipeline.py analyse --source &lt;src&gt;</code></td>
+    </tr>
+    <tr>
+      <td>Sentiment-weighted edges</td>
+      <td>VADER / TextBlob scores written back as <code>r.sentiment</code> via UNWIND.</td>
+      <td><code>--sentiment</code></td>
+    </tr>
+    <tr>
+      <td>Concept dictionary</td>
+      <td>Analyst-controlled vocabulary boosts/filters key terms.</td>
+      <td><code>--concept-dictionary default</code></td>
+    </tr>
+    <tr>
+      <td>Temporal comparison</td>
+      <td>Per-slice subgraphs tagged with <code>slice_id</code>; comparison via Cypher set operations.</td>
+      <td><code>pipeline.py temporal --temporal N</code> · Temporal tab</td>
+    </tr>
+    <tr>
+      <td>Streamlit dashboard</td>
+      <td>Reads metadata, centralities, communities and chat from Neo4j directly.</td>
+      <td><code>python -m streamlit run src/extensions/dashboard.py</code></td>
+    </tr>
+    <tr>
+      <td>LLM / RAG chatbot</td>
+      <td>Conversational Q&amp;A grounded in the Neo4j graph; pluggable LLM providers.</td>
+      <td><code>python chat.py</code> · <code>pipeline.py chat</code> · Chat tab</td>
+    </tr>
+    <tr>
+      <td>Edge-level semantic search</td>
+      <td>Verb-aware retrieval (<em>“who recommended the food?”</em>) via Neo4j relationship vector index.</td>
+      <td><code>pipeline.py etl --embed</code> + <code>chat --vector-store</code></td>
+    </tr>
+    <tr>
+      <td>Advanced extraction pass</td>
+      <td>Optional deterministic merge of substring-near-duplicate concepts after extraction.</td>
+      <td><code>--advanced-extraction</code> on <code>etl</code> / shared args</td>
+    </tr>
+    <tr>
+      <td>Dashboard LLM narratives</td>
+      <td>Optional short blurbs on metric tabs and polished SNA insight cards (requires LLM env).</td>
+      <td>Set <code>LLM_PROVIDER</code> + keys; use on-demand buttons in Streamlit</td>
+    </tr>
+    <tr>
+      <td>Temporal insight cards</td>
+      <td>Comparison / drift style observations over <code>slice_id</code> slices in the Temporal tab.</td>
+      <td>Run <code>pipeline.py temporal</code> (or <code>all --temporal N</code>); inspect Temporal tab</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ─────────────────── 6. DELIVERABLES ─────────────────── -->
+<h2><span class="num">6</span>Deliverables</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Software</h3>
+    <ul>
+      <li>End-to-end CLI pipeline (<code>pipeline.py</code>) with subcommands for ETL, GDS analysis, viz, temporal, chat</li>
+      <li>Standalone Stage-8 chatbot (<code>chat.py</code>) reading from Neo4j</li>
+      <li>Streamlit dashboard with Network, Centrality, Communities, Brokers, Temporal, Chat and Summary tabs</li>
+      <li>Required Neo4j persistence layer with native node + relationship vector indexes (<code>docker compose up</code>)</li>
+      <li>Unit + Neo4j integration tests under <code>tests/</code></li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Outputs &amp; artefacts</h3>
+    <ul>
+      <li>Live conceptual graph in Neo4j (browse via <code>http://localhost:7474</code>)</li>
+      <li>Centralities, communities, brokers and bridging concepts written back as node properties</li>
+      <li>Optional CSV dumps via <code>--export-csv</code> for downstream sharing</li>
+      <li>Static PNG plots and interactive HTML network visualisations from top-N subgraphs</li>
+      <li>Documentation: <code>README.md</code>, <a href="./pipeline_documentation.html">Pipeline Documentation</a>, this brief</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ─────────────────── 7. RUN IT ─────────────────── -->
+<h2><span class="num">7</span>Quick Start</h2>
+<div class="card">
+  <div class="kv">
+    <dt>Install</dt>
+    <dd><code>pip install -r requirements.txt &amp;&amp; python -m spacy download en_core_web_sm</code></dd>
+    <dt>Bring up Neo4j</dt>
+    <dd><code>cp .env.example .env &amp;&amp; docker compose up -d</code> — set <code>NEO4J_PASSWORD</code> in <code>.env</code></dd>
+    <dt>Policy run</dt>
+    <dd><code>python pipeline.py all --source policy --reset --embed</code></dd>
+    <dt>Yelp run</dt>
+    <dd><code>python pipeline.py all --source yelp --yelp-category Restaurants --yelp-sample 500 --reset</code></dd>
+    <dt>Combined + extras</dt>
+    <dd><code>python pipeline.py all --source combined --reset --sentiment --embed --temporal 3</code></dd>
+    <dt>Dashboard</dt>
+    <dd><code>python -m streamlit run src/extensions/dashboard.py</code></dd>
+    <dt>Chatbot</dt>
+    <dd><code>python chat.py --source policy --vector-store</code> &nbsp;·&nbsp; <code>python pipeline.py chat --source policy</code></dd>
+  </div>
+</div>
+
+<footer>
+  Text-to-Network Engine · COS70008 Technology Innovation Project · Industry partner: SNA Toolbox
+</footer>
+
+</body>
+</html>

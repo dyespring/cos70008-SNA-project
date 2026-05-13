@@ -147,8 +147,9 @@ class TestNeo4jRoundTrip:
             assert "cause" in (rec["verb_list"] or [])
 
         # Embed all verb edges + top-N=1 ASSOCIATION (so both edges get vectors).
+        # Either pass G (legacy) or read directly from Neo4j — both supported.
         embedded = store.embed_edges(
-            G, source_label=_SOURCE_LABEL, top_n_association=1
+            source_label=_SOURCE_LABEL, top_n_association=1, G=G,
         )
         assert embedded == 2
 

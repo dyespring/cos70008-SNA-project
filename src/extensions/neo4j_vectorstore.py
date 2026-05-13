@@ -1,13 +1,10 @@
 """Neo4j-backed vector store for the Stage-8 chatbot.
 
-Mirrors the contract of :class:`src.extensions.graph_vectorstore.GraphVectorStore`
-so ``chatbot.QueryRouter`` can treat either backend interchangeably. Uses the
-native ``db.index.vector.queryNodes`` procedure (Neo4j 5.11+).
-
-The embedding model remains ``sentence-transformers`` — only the index
-changes. If the driver / model / server are unavailable, ``available`` is
-``False`` and :meth:`search` returns an empty list, letting the router fall
-back to fuzzy label matching.
+Wraps Neo4j's native ``db.index.vector.queryNodes`` procedure (Neo4j 5.11+)
+into the contract the chatbot router expects. The embedding model is
+``sentence-transformers``. If the driver / model / server are unavailable,
+``available`` is ``False`` and :meth:`search` returns an empty list,
+letting the router fall back to fuzzy label matching.
 """
 
 from __future__ import annotations

@@ -1,14 +1,10 @@
 """Neo4j-backed edge vector store for the Stage-8 chatbot.
 
-Mirrors :class:`src.extensions.graph_vectorstore.GraphEdgeVectorStore` but
-delegates similarity search to Neo4j's native relationship vector index
-(``db.index.vector.queryRelationships``, Neo4j 5.18+).
-
-The chatbot router treats either backend interchangeably so the project can
-be demoed with or without a running Neo4j instance. When the driver, model,
-or server are unavailable, ``available`` is set to ``False`` and
-:meth:`search` returns ``[]`` — the chatbot falls back to node-level vector
-search and fuzzy label matching without error.
+Delegates similarity search to Neo4j's native relationship vector index
+(``db.index.vector.queryRelationships``, Neo4j 5.18+). When the driver,
+model, or server are unavailable, ``available`` is set to ``False`` and
+:meth:`search` returns ``[]`` — the chatbot falls back to node-level
+vector search and fuzzy label matching without error.
 """
 
 from __future__ import annotations

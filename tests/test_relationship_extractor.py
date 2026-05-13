@@ -88,13 +88,13 @@ class TestRelationshipVerbPreservation:
         assert len(r.verbs) == 0
 
 
-class TestGraphBuilderVerbAggregation:
-    def test_verbs_merge_on_edge(self):
-        """When two Relationship rows share (src, tgt, type), verbs combine."""
-        from src.network.graph_builder import GraphBuilder
+class TestNeo4jWriterVerbAggregation:
+    """In-memory aggregation logic now lives on Neo4jGraphWriter (no DB needed)."""
 
-        builder = GraphBuilder(min_edge_weight=1)
-        concepts = _concepts("pizza", "customer")
+    def test_verbs_merge_on_edge(self):
+        """When two Relationship rows share (src, tgt), verbs combine in the bucket."""
+        from src.network.neo4j_writer import Neo4jGraphWriter
+
         rels = [
             Relationship(
                 source_id="customer", target_id="pizza", type="ACTION",
@@ -107,9 +107,11 @@ class TestGraphBuilderVerbAggregation:
                 verbs=Counter({"recommend": 1, "order": 3}),
             ),
         ]
-        G = builder.build(concepts, rels)
-        assert G.has_edge("customer", "pizza")
-        data = G.get_edge_data("customer", "pizza")
-        merged: Counter = data["verbs"]
+        bucket: dict = {}
+        for r in rels:
+            Neo4jGraphWriter._add_edge(bucket, r.source_id, r.target_id, r)
+        assert ("customer", "pizza") in bucket
+        merged: Counter = bucket[("customer", "pizza")]["verbs"]
         assert merged["recommend"] == 3
         assert merged["order"] == 3
+        assert bucket[("customer", "pizza")]["weight"] == 3

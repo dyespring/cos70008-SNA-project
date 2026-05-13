@@ -21,7 +21,14 @@ def sample_doc() -> ProcessedDocument:
 
 class TestConceptExtractor:
     def test_extracts_entities(self, sample_doc):
-        extractor = ConceptExtractor(use_ner=True, use_noun_phrases=False, use_tfidf=False, min_freq=1)
+        # Small corpus → entities only appear once or twice; relax the
+        # per-entity-type gates (PERSON/ORG/PRODUCT default to 10) so
+        # we're testing entity extraction, not the noise-control layer.
+        extractor = ConceptExtractor(
+            use_ner=True, use_noun_phrases=False, use_tfidf=False,
+            min_freq=1, min_person_freq=1,
+            min_entity_freq={"PERSON": 1, "ORG": 1, "PRODUCT": 1},
+        )
         concepts = extractor.extract([sample_doc])
         labels = {c.label for c in concepts}
         assert any("australian" in l for l in labels) or len(concepts) > 0

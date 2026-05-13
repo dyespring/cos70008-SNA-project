@@ -1,11 +1,10 @@
-"""Cypher-backed GraphContext implementation.
+"""Cypher-backed GraphContext: the chatbot's only graph-access interface.
 
-Mirrors the public surface of :class:`src.extensions.graph_context.GraphContext`
-so the Stage-8 chatbot and Streamlit Chat tab can swap backends without
-touching their code. Expensive graph operations (path finding, neighbour
-ranking, aggregations) are executed server-side as Cypher queries against
-Neo4j; a tiny in-memory label index is kept locally to satisfy the router's
-``gc.G.nodes[nid]["label"]`` access pattern.
+In the Neo4j-only pipeline this class replaces the legacy in-memory
+``GraphContext`` entirely. Every method is implemented as Cypher against
+the live Neo4j instance; a small dict cache (``_label_to_id`` +
+``node_meta``) is kept locally so the router can resolve labels and look
+up node metadata without re-hitting the database for every keystroke.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ import logging
 from difflib import get_close_matches
 from typing import TYPE_CHECKING
 
-import networkx as nx
 import pandas as pd
 
 if TYPE_CHECKING:
@@ -31,13 +29,15 @@ class Neo4jGraphContext:
         self,
         store: "Neo4jStore",
         source_label: str = "combined",
+        slice_id: str | None = None,
     ):
         self.store = store
         self.source_label = source_label
-        # Thin NX shim so chatbot.QueryRouter can still read
-        # ``gc.G.nodes[nid].get("label", nid)`` without special-casing.
-        self.G: nx.DiGraph = nx.DiGraph()
+        self.slice_id = slice_id
         self._label_to_id: dict[str, str] = {}
+        # Per-node metadata dict so the router can do ``gc.node_meta[nid]``
+        # without touching Neo4j for every match.
+        self.node_meta: dict[str, dict] = {}
         self.centrality_df: pd.DataFrame = pd.DataFrame(
             columns=["node_id", "label", "pagerank"]
         )
@@ -47,34 +47,43 @@ class Neo4jGraphContext:
     # ── Internal cache ─────────────────────────────────────────────
     def _refresh_indexes(self) -> None:
         """Pull minimal node metadata so the router can look up labels."""
+        params = {"s": self.source_label}
+        slice_filter = ""
+        if self.slice_id is not None:
+            params["sid"] = self.slice_id
+            slice_filter = " AND c.slice_id = $sid"
+
         rows: list[dict] = []
         with self.store.session() as s:
             result = s.run(
-                "MATCH (c:Concept {source_label: $s}) "
-                "RETURN c.id AS id, c.label AS label, c.concept_type AS type, "
-                "       c.source_type AS source_type, c.community AS community, "
-                "       c.frequency AS frequency, c.pagerank AS pagerank, "
-                "       c.betweenness AS betweenness",
-                s=self.source_label,
+                "MATCH (c:Concept) "
+                "WHERE c.source_label = $s"
+                + slice_filter
+                + " RETURN c.id AS id, c.label AS label, c.concept_type AS type, "
+                "        c.source_type AS source_type, c.community AS community, "
+                "        c.frequency AS frequency, c.pagerank AS pagerank, "
+                "        c.betweenness AS betweenness",
+                **params,
             )
             for rec in result:
                 rows.append(dict(rec))
 
-        self.G.clear()
         self._label_to_id.clear()
+        self.node_meta.clear()
+        self.partition.clear()
         for r in rows:
             nid = r["id"]
-            self.G.add_node(
-                nid,
-                label=r.get("label") or nid,
-                concept_type=r.get("type"),
-                source_type=r.get("source_type"),
-                community=r.get("community"),
-                frequency=r.get("frequency"),
-                pagerank=r.get("pagerank"),
-                betweenness=r.get("betweenness"),
-            )
             lbl = r.get("label") or nid
+            meta = {
+                "label": lbl,
+                "concept_type": r.get("type"),
+                "source_type": r.get("source_type"),
+                "community": r.get("community"),
+                "frequency": r.get("frequency"),
+                "pagerank": r.get("pagerank"),
+                "betweenness": r.get("betweenness"),
+            }
+            self.node_meta[nid] = meta
             self._label_to_id[lbl] = nid
             self.partition[nid] = int(r.get("community") or -1)
 
@@ -91,9 +100,17 @@ class Neo4jGraphContext:
                 ]
             )
 
+    # ── Node metadata accessor ─────────────────────────────────────
+    def label_for(self, node_id: str) -> str:
+        """Return the human label for a node id, or the id itself as fallback."""
+        meta = self.node_meta.get(node_id)
+        if meta:
+            return meta.get("label") or node_id
+        return node_id
+
     # ── Label resolution ───────────────────────────────────────────
     def resolve(self, label: str) -> str | None:
-        if label in self.G.nodes():
+        if label in self.node_meta:
             return label
         if label in self._label_to_id:
             return self._label_to_id[label]

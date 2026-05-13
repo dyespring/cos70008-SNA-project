@@ -25,12 +25,9 @@ from typing import TYPE_CHECKING, Any, Optional
 from src import config
 
 if TYPE_CHECKING:
-    from src.extensions.graph_context import GraphContext
-    from src.extensions.graph_vectorstore import (
-        GraphEdgeVectorStore,
-        GraphVectorStore,
-    )
     from src.extensions.neo4j_edge_vectorstore import Neo4jEdgeVectorStore
+    from src.extensions.neo4j_graph_context import Neo4jGraphContext
+    from src.extensions.neo4j_vectorstore import Neo4jVectorStore
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -310,11 +307,9 @@ class QueryRouter:
 
     def __init__(
         self,
-        graph_context: "GraphContext",
-        vector_store: Optional["GraphVectorStore"] = None,
-        edge_vector_store: Optional[
-            "GraphEdgeVectorStore | Neo4jEdgeVectorStore"
-        ] = None,
+        graph_context: "Neo4jGraphContext",
+        vector_store: Optional["Neo4jVectorStore"] = None,
+        edge_vector_store: Optional["Neo4jEdgeVectorStore"] = None,
     ):
         self.gc = graph_context
         self.vs = vector_store
@@ -423,7 +418,7 @@ class QueryRouter:
         if self.vs and self.vs.available:
             hits = self.vs.search(q, k=top_k)
             for nid, score in hits:
-                label = self.gc.G.nodes[nid].get("label", nid)
+                label = self.gc.label_for(nid)
                 if label in routed.matched_labels:
                     continue
                 routed.snippets.append(
@@ -466,12 +461,10 @@ class GraphChatbot:
 
     def __init__(
         self,
-        graph_context: "GraphContext",
+        graph_context: "Neo4jGraphContext",
         llm_provider: Optional[LLMProvider] = None,
-        vector_store: Optional["GraphVectorStore"] = None,
-        edge_vector_store: Optional[
-            "GraphEdgeVectorStore | Neo4jEdgeVectorStore"
-        ] = None,
+        vector_store: Optional["Neo4jVectorStore"] = None,
+        edge_vector_store: Optional["Neo4jEdgeVectorStore"] = None,
     ):
         self.gc = graph_context
         self.llm = llm_provider or build_default_provider()

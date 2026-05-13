@@ -4,216 +4,222 @@
 
 A Python pipeline that transforms unstructured text into conceptual networks for social network analysis (SNA). Built for SNA Toolbox as part of COS70008 Technology Innovation Project.
 
+The engine is **Neo4j-only**: every concept, relationship, embedding and SNA metric lives in a Neo4j 5 database. The pipeline writes into it (Stage 1-4), Neo4j Graph Data Science (GDS) computes centralities and communities server-side (Stage 5), and downstream consumers (dashboard, chatbot, visualisations) read straight back via Cypher.
+
 ## Overview
 
-The engine ingests raw text (policy documents, Yelp reviews, or narrative text), extracts key concepts and their relationships using NLP techniques, constructs a network graph, and applies SNA methods to produce actionable insights.
+The engine ingests raw text (policy documents, Yelp reviews, or narrative text), extracts key concepts and their relationships using NLP techniques, writes them into Neo4j as `(:Concept)-[:RELATED]->(:Concept)`, then asks the GDS plugin to compute centrality, communities, brokerage and paths. A Streamlit dashboard and an LLM/RAG chatbot let analysts explore the resulting graph.
 
-## Pipeline Stages
+## Architecture
 
-1. **Data Ingestion** — Read PDF policy documents or Yelp JSON reviews
-2. **Preprocessing** — Clean, tokenise, lemmatise, and filter text
-3. **Concept & Relationship Extraction** — NER, noun-phrase chunking, TF-IDF; co-occurrence windows, dependency parsing, and causal pattern matching
-4. **Network Construction** — Build NetworkX graphs with typed, weighted edges
-5. **Network Analysis** — Centrality, community detection, brokerage, path analysis
-6. **Visualisation** — Static matplotlib plots and interactive pyvis HTML graphs
-7. **Temporal Comparison** *(optional)* — Build separate networks per time slice / document section and compare overlap and drift
-8. **Conversational Exploration** *(optional)* — LLM/RAG chatbot grounded in the conceptual network
+```
+Stage 1-2 (Python)      Stage 3 (Python)        Stage 4 (Python)
+ingest + spaCy   ───►   Concept[] + Rel[]  ───► Neo4jGraphWriter (Cypher UNWIND)
+                                                          │
+                                                          ▼
+                                                      Neo4j 5
+                                                  (:Concept)-[:RELATED]->
+                                                          ▲
+                                  Stage 5 (server-side)  │
+                                  GdsAnalysisRunner ─────┘
+                                  · pageRank · betweenness
+                                  · louvain  · wcc · degree
+                                                          │
+            Stage 6 (Python, transient)                   │
+            cypher_to_nx.fetch_subgraph(top_n=200) ◄──────┤
+            → matplotlib + pyvis HTML                     │
+                                                          │
+            Stage 7 (Python -> Neo4j)                     │
+            TemporalAnalyser writes per-slice subgraphs   │
+            tagged with `slice_id`; comparison via Cypher │
+                                                          │
+            Stage 8 (Python -> Neo4j)                     │
+            Neo4jGraphContext + Neo4jVectorStore  ◄───────┘
+            → GraphChatbot (echo / OpenAI / DashScope / HF)
+```
+
+NetworkX is used in only one place: the visualisation adapter pulls a top-N subgraph back into an `nx.DiGraph` for `matplotlib` / `pyvis` rendering. There is no in-memory NetworkX state in the long-running services.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
+# 1. Install dependencies
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 
-# Run the full pipeline on the policy document
-python pipeline.py --source policy --output results/
+# 2. Bring up Neo4j (with APOC + GDS already enabled in docker-compose.yml)
+cp .env.example .env                       # set NEO4J_PASSWORD here
+docker compose up -d
+#    Browser UI: http://localhost:7474
 
-# Run on Yelp reviews (sampled)
-python pipeline.py --source yelp --yelp-category Restaurants --yelp-sample 500 --output results/
+# 3. Run the pipeline (each subcommand is independent)
+python pipeline.py etl     --source policy --reset
+python pipeline.py analyse --source policy --embed
+python pipeline.py viz     --source policy --top-n 200 --export-csv
 
-# Add temporal comparison (3 slices) and sentiment-weighted edges
-python pipeline.py --source combined --temporal 3 --sentiment --output results/
+# Or one-shot:
+python pipeline.py all --source combined --reset --sentiment --embed
 
-# Launch the interactive Streamlit dashboard (5 analysis tabs + Temporal + Chat)
-streamlit run src/extensions/dashboard.py
-
-# Stage 8: conversational Q&A over the knowledge graph
-python chat.py --source policy              # standalone
-python pipeline.py --source policy --chat   # appended to the main pipeline
+# 4. Explore
+python -m streamlit run src/extensions/dashboard.py
+python pipeline.py chat --source policy --vector-store
 ```
 
-### LLM / chatbot configuration
+## CLI subcommands
 
-The chatbot (`chat.py`, `--chat`, and the dashboard **Chat** tab) is
-provider-agnostic. Select a backend via `LLM_PROVIDER`:
+| Command | Stage(s) | What it does |
+|---|---|---|
+| `etl` | 1-4 | Ingest PDF / Yelp, extract concepts + relationships, **write to Neo4j**. Optional: `--sentiment`, `--embed`. |
+| `analyse` | 5 | Run GDS algorithms server-side (PageRank, Louvain, betweenness, closeness, eigenvector, WCC, local clustering); write metrics back as node properties. |
+| `viz` | 6 | Pull a top-N subgraph from Neo4j and render PNG + interactive HTML. `--export-csv` also dumps centralities/communities/brokers. |
+| `temporal` | 7 | Build N per-slice subgraphs (each tagged with a unique `slice_id`); compute jaccard / overlap via Cypher. |
+| `chat` | 8 | Drop into the chatbot grounded in the Neo4j graph (`--vector-store` enables semantic search). |
+| `all` | 1-6 (+7/8 opt) | Run `etl` -> `analyse` -> `viz` in one shot. |
 
-| Provider             | Env vars                        | Install                       |
+Every subcommand requires `NEO4J_PASSWORD` in the environment and a reachable Neo4j instance — there is no fallback.
+
+## LLM / chatbot configuration
+
+The chatbot (`chat.py`, `pipeline.py chat`, and the dashboard **Chat** tab) is provider-agnostic. Select a backend via `LLM_PROVIDER`:
+
+| Provider             | Env vars                         | Install                       |
 |----------------------|----------------------------------|-------------------------------|
 | `echo` *(default)*   | none                             | none — no-LLM fallback        |
 | `openai`             | `OPENAI_API_KEY`, `LLM_MODEL`    | `pip install openai`          |
 | `dashscope` *(Qwen)* | `DASHSCOPE_API_KEY`, `LLM_MODEL` | `pip install openai`          |
 | `huggingface_api`    | `HUGGINGFACE_API_TOKEN`, `LLM_MODEL` | `pip install huggingface_hub` |
-| `huggingface_local`  | `LLM_MODEL` (local model id)    | `pip install transformers`    |
+| `huggingface_local`  | `LLM_MODEL` (local model id)     | `pip install transformers`    |
 
-Optional semantic retrieval (improves routing for paraphrased questions)
-requires `sentence-transformers` + `faiss-cpu` (already in `requirements.txt`).
+Semantic retrieval (Neo4j native vector index) requires `sentence-transformers`; embeddings are populated by `pipeline.py etl --embed` or `pipeline.py analyse --embed`.
 
 ```bash
-# OpenAI
 export LLM_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
-python chat.py --source combined --vector-store
+python pipeline.py chat --source combined --vector-store
 
-# Aliyun DashScope (Qwen) — OpenAI-compatible, same client, just a different endpoint
+# Aliyun DashScope (Qwen) — OpenAI-compatible
 export LLM_PROVIDER=dashscope
-export LLM_MODEL=qwen-turbo            # or qwen-plus / qwen-max / qwen2.5-72b-instruct
+export LLM_MODEL=qwen-turbo
 export DASHSCOPE_API_KEY=sk-...
-python chat.py --source combined --vector-store
+python pipeline.py chat --source combined --vector-store
 ```
-
-> **Note on embeddings.** The vector store (FAISS / Neo4j) keeps using the
-> local `sentence-transformers` model regardless of which LLM you pick.
-> Switching to a remote embedding model (e.g. DashScope `text-embedding-v2`,
-> 1536-dim) would require setting `NEO4J_EMBEDDING_DIM=1536` and re-running
-> the pipeline with `--neo4j-reset` to rebuild every node and edge vector.
 
 ## Project Structure
 
 ```
 src/
-  config.py               # Global settings and parameters (including LLM/embedding)
-  ingest/                 # Data readers (PDF, Yelp JSON)
-  preprocessing/          # Text cleaning and tokenisation
-  extraction/             # Concept and relationship extraction
-  network/                # Graph construction and SNA analysis
-  visualisation/          # Static and interactive visualisations
-  extensions/             # Sentiment, concept dictionary, temporal,
-                          # Streamlit dashboard, chatbot (Stage 8)
-notebooks/                # Jupyter notebooks for exploration and demos
-config/                   # User-editable concept_dictionary.yaml
-tests/                    # Unit tests
-pipeline.py               # CLI entry point (stages 1-8)
-chat.py                   # Standalone Stage-8 chatbot entry point
+  config.py                         # Global settings; `require_neo4j_config()` hard-fails on misconfig
+  ingest/                           # PDF / Yelp readers
+  preprocessing/                    # Cleaning + spaCy tokenisation
+  extraction/                       # Concept and relationship extraction
+  network/
+    neo4j_writer.py                 # Concept[] + Relationship[] -> Cypher UNWIND
+    gds_analyser.py                 # GDS PageRank / Louvain / betweenness etc.
+  visualisation/
+    cypher_to_nx.py                 # Top-N subgraph fetcher (Neo4j -> transient nx.DiGraph)
+    static_viz.py                   # matplotlib renderers
+    interactive_viz.py              # pyvis HTML renderer
+  extensions/
+    sentiment.py                    # VADER/TextBlob -> SET r.sentiment
+    concept_dictionary.py           # User-defined concept allow-list / aliases
+    temporal.py                     # Per-slice subgraphs (slice_id) + Cypher comparison
+    temporal_slicing.py             # Build (label, [ProcessedDocument]) lists
+    neo4j_store.py                  # Driver lifetime, schema, embeddings, vector indexes
+    neo4j_graph_context.py          # Cypher-backed read API for the chatbot
+    neo4j_vectorstore.py            # Node vector search (db.index.vector.queryNodes)
+    neo4j_edge_vectorstore.py       # Edge vector search (db.index.vector.queryRelationships)
+    chatbot.py                      # LLM providers + QueryRouter + GraphChatbot
+    dashboard.py                    # Streamlit app (reads everything from Neo4j)
+config/                             # User-editable concept_dictionary.yaml
+tests/                              # Unit + Neo4j integration tests
+pipeline.py                         # CLI: etl / analyse / viz / temporal / chat / all
+chat.py                             # Standalone chatbot entry point
 ```
+
+## Neo4j schema
+
+```
+(:Concept {
+  id, label, concept_type, source_type, frequency,
+  source_label, slice_id,
+  pagerank, betweenness, closeness, eigenvector,
+  degree, community, wcc_component, local_clustering,
+  embedding                            # 384-d cosine, sentence-transformers
+})
+
+-[:RELATED {
+  weight, types, directed,
+  source_label, slice_id,
+  top_verb, verb_count, verb_list,
+  sentiment, sentiment_label,          # if --sentiment
+  embedding                            # 384-d cosine, edge-level
+}]->
+
+Schema objects (all created idempotently by Neo4jStore.ensure_schema):
+  CONSTRAINT concept_id          UNIQUE (c.id)
+  INDEX concept_source_slice     ON (c.source_label, c.slice_id)
+  INDEX concept_label            ON (c.label)
+  INDEX concept_community        ON (c.community)
+  INDEX related_source_slice     ON [r:RELATED] (r.source_label, r.slice_id)
+  VECTOR INDEX concept_embedding ON (c.embedding)
+  VECTOR INDEX related_embedding ON [r:RELATED] (r.embedding)
+```
+
+`source_label` (e.g. `policy`, `yelp`, `combined`) and `slice_id` (set only by the temporal stage) form a composite scope so multiple datasets / snapshots coexist in the same database without colliding.
+
+### Edge-level semantic search
+
+Verb lemmas from spaCy dependency parsing are preserved on the edge (`r.top_verb`, `r.verb_count`, `r.verb_list`) so the chatbot can answer relational questions like *"who recommended the food?"* rather than only "which concepts are important?".
+
+To keep storage and runtime reasonable we embed a curated subset of edges:
+- **all** edges produced by dependency parsing (ACTION + CAUSATION — i.e. every edge with `top_verb` set), and
+- the **top-N** ASSOCIATION edges by weight (default N = 2000, configurable via `--edge-embed-top-n`).
+
+```bash
+# Embed default top-2000 association edges
+python pipeline.py etl --source combined --embed
+
+# Richer edge recall (slower, more storage)
+python pipeline.py etl --source combined --embed --edge-embed-top-n 5000
+
+# Verb-only embedding (skip ASSOCIATION co-occurrence edges entirely)
+python pipeline.py etl --source combined --embed --edge-embed-top-n 0
+```
+
+The chatbot's `QueryRouter` automatically switches on edge-level search when the question contains a relational verb (recommend, hate, order, cause, prefer, ...) or a `who/what ... verb ...` pattern.
 
 ## Optional Extensions
 
-- **Sentiment-weighted edges** — Attach VADER/TextBlob sentiment scores to relationships (`--sentiment`)
-- **User-defined concept dictionary** — Analyst-controlled vocabularies (`--concept-dictionary default`, see `config/concept_dictionary.yaml`)
-- **Temporal comparison** — Compare networks across document sections or time periods (`--temporal N`, or the Temporal tab in the dashboard)
-- **Interactive dashboard** — Streamlit app for exploring networks in the browser, including a Chat tab wired to the Stage-8 chatbot
-- **LLM/RAG chatbot (Stage 8)** — Conversational Q&A grounded in the graph, with pluggable OpenAI / Hugging Face / local providers (`python chat.py`, `--chat`, or the dashboard Chat tab)
-- **Neo4j backend** — Persist the conceptual network in a local Neo4j instance; route chatbot retrieval through Cypher + the native vector index (see below)
+- **Sentiment-weighted edges** — VADER / TextBlob scoring, written back as `r.sentiment` (`pipeline.py etl --sentiment`).
+- **User-defined concept dictionary** — Analyst-controlled vocabularies via `pipeline.py etl --concept-dictionary default` (see `config/concept_dictionary.yaml`).
+- **Temporal comparison + insights** — `pipeline.py temporal --source combined --temporal 3` builds three sliced subgraphs (each tagged with its own `slice_id`), runs GDS write-back per slice, and the dashboard's **Temporal** tab surfaces trend / drift / comparison insight cards. Add `--skip-gds` to skip the per-slice GDS pass when iterating quickly.
+- **Interactive dashboard** — Streamlit app rendering the live Neo4j subgraph through vis-network (no NetworkX rebuild on the hot path), with per-tab LLM blurbs on Centrality / Communities / Brokers / Summary.
+- **LLM / RAG chatbot (Stage 8)** — Conversational Q&A grounded in the graph, with pluggable OpenAI / DashScope / Hugging Face / local providers.
 
-## Optional: Neo4j backend
+## Tuning the extraction pipeline
 
-NetworkX + CSV remains the default. Neo4j is an additive backend that gives
-you a persistent, Cypher-queryable graph and a server-side vector index for
-the Stage-8 chatbot.
+All extraction thresholds live in [`src/config.py`](src/config.py) and have CLI overrides on every subcommand that runs ETL. Reach for them in this order if the default network is too noisy or too sparse:
 
-### 1. Start Neo4j locally
+| Knob | CLI flag | Purpose |
+|---|---|---|
+| `MIN_CONCEPT_FREQ` | `--min-concept-freq` | Minimum corpus-wide frequency to keep a concept (default 3). |
+| `MIN_PERSON_FREQ` | `--min-person-freq` | Stricter gate for NER `PERSON` entities (default 10). |
+| `TFIDF_MIN_DF` / `TFIDF_MAX_DF` | `--tfidf-min-df`, `--tfidf-max-df` | Drop ngrams that appear in too few / too many documents. |
+| `MIN_EDGE_WEIGHT` | `--min-weight` | Drop edges whose raw co-occurrence count is below this. |
+| `MIN_NPMI` | `--min-npmi` | Drop association edges with NPMI below this (`-1` disables). |
+| `CO_OCCURRENCE_WINDOW` | `--cooccurrence-window` | Sliding sentence window for co-occurrence edges. |
+| Source-aware stopwords | `src.config.stopwords_for(source)` | Universal + per-source stopword union (`yelp` / `policy` / `combined`). |
 
-A `docker-compose.yml` is included. It launches Neo4j 5 with APOC + Graph
-Data Science plugins and mounts data/logs under `./.neo4j/` (gitignored).
-
-```bash
-cp .env.example .env                  # contains NEO4J_PASSWORD
-set -a && source .env && set +a       # or use direnv / your preferred tool
-docker compose up -d
-# Browser UI at http://localhost:7474 (user: neo4j, pwd: from .env)
-```
-
-### 2. Populate it from the pipeline
+For an opt-in second pass that folds substring duplicates (e.g. `climate` into `climate change`) and consolidates evidence, add:
 
 ```bash
-# Build the graph and push nodes + edges + embeddings into Neo4j
-python pipeline.py --source combined --neo4j
-
-# Re-run cleanly (wipes prior Concept nodes with this source label)
-python pipeline.py --source combined --neo4j --neo4j-reset
+python pipeline.py etl --source combined --advanced-extraction \
+    --advanced-substring-ratio 0.6 --reset
 ```
 
-What gets written:
+The merger is dependency-free, deterministic, and lives in [`src/extraction/advanced.py`](src/extraction/advanced.py). Use [`candidate_substring_pairs`](src/extraction/advanced.py) to preview which pairs would merge before running the flag.
 
-- `(:Concept {id, label, concept_type, source_type, frequency, community, pagerank, betweenness, source_label})`
-- `-[:RELATED {weight, types, sentiment, source_label, top_verb, verb_count, verb_list}]->`
-- `c.embedding` (384-d cosine vector, same `all-MiniLM-L6-v2` model as FAISS)
-- `r.embedding` (384-d cosine vector, curated subset of edges — see below)
-- Schema: uniqueness constraint on `:Concept(id)`, node vector index
-  `concept_embedding`, and relationship vector index `related_embedding`
-
-### 2b. Edge-level semantic search
-
-Verb lemmas are preserved end-to-end from the spaCy dependency parse through
-to Neo4j, so the chatbot can answer relational questions like _"who
-recommended the food?"_ rather than only "which concepts are important?".
-
-To keep storage and runtime reasonable we embed a curated subset of edges:
-
-- **all** edges produced by dependency parsing (ACTION + CAUSATION — i.e.
-  every edge with a non-empty `r.verb_list`), and
-- the **top-N** ASSOCIATION edges by weight (default N = 2000, configurable
-  via `--edge-embed-top-n`).
-
-```bash
-# Embed the default top-2000 association edges
-python pipeline.py --source combined --neo4j
-
-# Richer edge recall (slower, more storage)
-python pipeline.py --source combined --neo4j --edge-embed-top-n 5000
-
-# Verb-only embedding (skip ASSOCIATION co-occurrence edges entirely)
-python pipeline.py --source combined --neo4j --edge-embed-top-n 0
-```
-
-Inside Neo4j the curated subset is queried via the native relationship
-vector index:
-
-```cypher
-CALL db.index.vector.queryRelationships('related_embedding', 5, $query_vec)
-YIELD relationship, score
-RETURN startNode(relationship).label AS src,
-       endNode(relationship).label   AS tgt,
-       relationship.top_verb         AS verb,
-       relationship.weight           AS weight,
-       score
-ORDER BY score DESC;
-```
-
-The chatbot's `QueryRouter` automatically switches on edge-level search
-when the question contains a relational verb (recommend, hate, order,
-cause, prefer, ...) or a `who/what ... verb ...` pattern. Example
-questions that now work well:
-
-- "Who recommended the food?"
-- "What causes resilience?"
-- "Which customers complain about service?"
-
-Backward-compatible: questions without relational verbs behave exactly
-as before, and running without `--neo4j` (in-memory FAISS backend) also
-builds a `GraphEdgeVectorStore` with the same verb-aware descriptions.
-
-### 3. Query it from the chatbot
-
-```bash
-# Standalone chat against Neo4j
-python chat.py --source combined --neo4j
-
-# Or let the pipeline chain it after a push
-python pipeline.py --source combined --neo4j --chat
-
-# In the Streamlit dashboard, toggle "Retrieval backend → Neo4j" in the Chat tab
-streamlit run src/extensions/dashboard.py
-```
-
-All chatbot methods (`describe_concept`, `top_concepts`, `shortest_path`,
-`compare_sources`, `graph_summary`) execute as Cypher, and semantic search
-runs via `db.index.vector.queryNodes` instead of FAISS.
-
-### 4. Environment variables
-
-Set in `.env` (see `.env.example` for defaults):
+## Environment variables
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -222,12 +228,11 @@ Set in `.env` (see `.env.example` for defaults):
 | `NEO4J_PASSWORD` | *(required)* | Also consumed by `docker compose` |
 | `NEO4J_DATABASE` | `neo4j` | |
 | `NEO4J_VECTOR_INDEX` | `concept_embedding` | |
-| `NEO4J_EDGE_VECTOR_INDEX` | `related_embedding` | Used by edge-level semantic search |
+| `NEO4J_EDGE_VECTOR_INDEX` | `related_embedding` | |
 | `NEO4J_EMBEDDING_DIM` | `384` | Must match `EMBEDDING_MODEL` output |
-
-If Neo4j is unreachable, `pipeline.py --neo4j`, `chat.py --neo4j`, and the
-dashboard toggle all fall back gracefully to the in-memory NetworkX + FAISS
-path and print a warning.
+| `LLM_PROVIDER` | `echo` | `openai` / `dashscope` / `huggingface_api` / `huggingface_local` / `echo` |
+| `LLM_MODEL` | `gpt-4o-mini` | Provider-specific model id |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer used for both node and edge embeddings |
 
 ## Data Sources
 
