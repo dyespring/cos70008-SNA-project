@@ -118,70 +118,7 @@ def fetch_vis_payload(
     if not node_rows:
         return {"nodes": [], "edges": [], "stats": _empty_stats()}
 
-    node_ids: list[str] = []
-    nodes: list[dict[str, Any]] = []
-    max_rank = 0.0
-    for r in node_rows:
-        rank_val = float(r.get(rank_property, 0.0) or 0.0)
-        if rank_val > max_rank:
-            max_rank = rank_val
-
-    palette_size = len(_COMMUNITY_COLOURS)
-    for r in node_rows:
-        nid = str(r["id"])
-        node_ids.append(nid)
-        community = int(r["community"])
-        source_type = r["source_type"]
-        rank_val = float(r.get(rank_property, 0.0) or 0.0)
-
-        if colour_by == "source":
-            colour = _SOURCE_COLOURS.get(source_type, _SOURCE_COLOURS["unknown"])
-        else:
-            colour = (
-                _COMMUNITY_COLOURS[community % palette_size]
-                if community >= 0
-                else "#cccccc"
-            )
-
-        # vis-network ``value`` drives the node radius; scale to a
-        # readable 8 → 60 px range based on the chosen rank metric.
-        scaled = (rank_val / max_rank) if max_rank > 0 else 0.0
-        size_value = 8 + 52 * scaled
-
-        title_text = _node_tooltip_text(
-            label=r["label"] or nid,
-            concept_type=r["concept_type"],
-            source_type=source_type,
-            frequency=int(r["frequency"]),
-            pagerank=float(r["pagerank"]),
-            betweenness=float(r["betweenness"]),
-            degree=float(r["degree"]),
-            community=community,
-            rank_property=rank_property,
-            rank_val=rank_val,
-            max_rank=max_rank,
-            colour_by=colour_by,
-        )
-
-        nodes.append({
-            "id": nid,
-            "label": _short_label(r["label"] or nid, 28),
-            "title": title_text,
-            "value": size_value,
-            "color": colour,
-            "group": community if community >= 0 else None,
-            "shape": "dot",
-            "font": {"size": 12, "face": "Inter, system-ui, sans-serif"},
-            "raw": {
-                "label": r["label"] or nid,
-                "source_type": source_type,
-                "concept_type": r["concept_type"],
-                "frequency": int(r["frequency"]),
-                "pagerank": float(r["pagerank"]),
-                "betweenness": float(r["betweenness"]),
-                "community": community,
-            },
-        })
+    node_ids = [str(r["id"]) for r in node_rows]
 
     edge_query = (
         "MATCH (a:Concept)-[r:RELATED]->(b:Concept) "
@@ -201,6 +138,267 @@ def fetch_vis_payload(
     edge_params = dict(params, ids=node_ids)
     with store.session() as s:
         edge_rows = list(s.run(edge_query, **edge_params))
+
+    payload = _assemble_payload(
+        node_rows,
+        edge_rows,
+        rank_property=rank_property,
+        colour_by=colour_by,
+        slice_id=slice_id,
+        min_edge_weight=min_edge_weight,
+    )
+    logger.info(
+        "fetch_vis_payload: %d nodes / %d edges (source_label=%s, top_n=%d, "
+        "rank=%s, min_edge_weight=%s, slice=%s)",
+        payload["stats"]["nodes"], payload["stats"]["edges"],
+        source_label, top_n, rank_property, min_edge_weight, slice_id,
+    )
+    return payload
+
+
+def fetch_ego_payload(
+    store: "Neo4jStore",
+    source_label: str,
+    *,
+    seed_id: str,
+    depth: int = 1,
+    neighbour_limit: int = 20,
+    min_edge_weight: int = 1,
+    rank_property: str = "pagerank",
+    colour_by: str = "community",
+    slice_id: str | None = None,
+) -> dict[str, Any]:
+    """Return a vis-network payload for the **ego graph** around a seed concept.
+
+    Walks out ``depth`` hops (capped to 1 or 2), keeping at most
+    ``neighbour_limit`` *new* nodes per hop, ordered by edge weight. The
+    seed node is flagged in ``stats["seed_id"]`` and rendered with a
+    highlighted border so the user can spot it in the canvas.
+
+    Parameters
+    ----------
+    seed_id:
+        ``c.id`` of the focus concept (resolve labels upstream, e.g. via
+        :meth:`Neo4jGraphContext.resolve` or a Cypher search).
+    depth:
+        How far to expand. ``1`` returns just the seed plus its direct
+        neighbours; ``2`` adds one more hop (capped by ``neighbour_limit``).
+    neighbour_limit:
+        Maximum **new** nodes added per hop (after deduplication). Total
+        node count is ``1 + depth * neighbour_limit`` at most.
+    """
+    rank_property = _safe_ident(rank_property)
+    depth = max(1, min(int(depth), 2))
+    neighbour_limit = max(1, int(neighbour_limit))
+
+    seed_id_str = str(seed_id)
+    seen: set[str] = {seed_id_str}
+    frontier: list[str] = [seed_id_str]
+
+    slice_filter_n = " AND n.slice_id = $sid" if slice_id is not None else ""
+    slice_filter_r = " AND r.slice_id = $sid" if slice_id is not None else ""
+
+    bfs_cypher = (
+        "MATCH (c:Concept)-[r:RELATED]-(n:Concept) "
+        "WHERE c.id IN $front "
+        "  AND c.source_label = $sl "
+        "  AND n.source_label = $sl "
+        "  AND NOT n.id IN $seen "
+        "  AND coalesce(r.weight, 1.0) >= $min_w"
+        + slice_filter_n
+        + slice_filter_r
+        + " WITH n.id AS nid, max(coalesce(r.weight, 1.0)) AS w "
+        "ORDER BY w DESC LIMIT $k "
+        "RETURN nid"
+    )
+
+    for _ in range(depth):
+        if not frontier:
+            break
+        params: dict[str, Any] = {
+            "front": frontier,
+            "seen": list(seen),
+            "sl": source_label,
+            "min_w": float(min_edge_weight),
+            "k": neighbour_limit,
+        }
+        if slice_id is not None:
+            params["sid"] = slice_id
+        with store.session() as s:
+            rows = list(s.run(bfs_cypher, **params))
+        next_frontier: list[str] = []
+        for r in rows:
+            nid = str(r["nid"])
+            if nid in seen:
+                continue
+            seen.add(nid)
+            next_frontier.append(nid)
+        frontier = next_frontier
+
+    all_ids = list(seen)
+
+    node_query = (
+        "MATCH (c:Concept) "
+        "WHERE c.id IN $ids AND c.source_label = $sl "
+        "RETURN c.id              AS id, "
+        "       c.label           AS label, "
+        "       coalesce(c.concept_type, 'concept') AS concept_type, "
+        "       coalesce(c.source_type, 'unknown')  AS source_type, "
+        "       coalesce(c.frequency, 0)            AS frequency, "
+        "       coalesce(c.pagerank, 0.0)           AS pagerank, "
+        "       coalesce(c.betweenness, 0.0)        AS betweenness, "
+        "       coalesce(c.degree, 0.0)             AS degree, "
+        "       coalesce(c.community, -1)           AS community"
+    )
+    with store.session() as s:
+        node_rows = list(s.run(node_query, sl=source_label, ids=all_ids))
+
+    if not node_rows:
+        empty = {
+            "nodes": [], "edges": [],
+            "stats": {
+                **_empty_stats(),
+                "seed_id": seed_id_str,
+                "ego_depth": depth,
+                "ego_neighbour_limit": neighbour_limit,
+            },
+        }
+        return empty
+
+    fetched_ids = [str(r["id"]) for r in node_rows]
+    edge_slice_filter = " AND r.slice_id = $sid" if slice_id is not None else ""
+    edge_query = (
+        "MATCH (a:Concept)-[r:RELATED]->(b:Concept) "
+        "WHERE a.id IN $ids AND b.id IN $ids "
+        "  AND r.source_label = $sl "
+        "  AND coalesce(r.weight, 1.0) >= $min_w"
+        + edge_slice_filter
+        + " RETURN a.id AS src, b.id AS tgt, "
+        "        coalesce(a.label, toString(a.id)) AS src_label, "
+        "        coalesce(b.label, toString(b.id)) AS tgt_label, "
+        "        coalesce(r.weight, 1.0) AS weight, "
+        "        coalesce(r.types, '')   AS types, "
+        "        r.sentiment             AS sentiment, "
+        "        r.sentiment_label       AS sentiment_label, "
+        "        r.top_verb              AS top_verb"
+    )
+    edge_params: dict[str, Any] = {
+        "ids": fetched_ids,
+        "sl": source_label,
+        "min_w": float(min_edge_weight),
+    }
+    if slice_id is not None:
+        edge_params["sid"] = slice_id
+    with store.session() as s:
+        edge_rows = list(s.run(edge_query, **edge_params))
+
+    payload = _assemble_payload(
+        node_rows,
+        edge_rows,
+        rank_property=rank_property,
+        colour_by=colour_by,
+        slice_id=slice_id,
+        min_edge_weight=min_edge_weight,
+        seed_id=seed_id_str,
+    )
+    payload["stats"]["seed_id"] = seed_id_str
+    payload["stats"]["ego_depth"] = depth
+    payload["stats"]["ego_neighbour_limit"] = neighbour_limit
+    logger.info(
+        "fetch_ego_payload: %d nodes / %d edges (seed=%s, depth=%d, k=%d, "
+        "source_label=%s, slice=%s)",
+        payload["stats"]["nodes"], payload["stats"]["edges"],
+        seed_id_str, depth, neighbour_limit, source_label, slice_id,
+    )
+    return payload
+
+
+def _assemble_payload(
+    node_rows: list[dict[str, Any]],
+    edge_rows: list[dict[str, Any]],
+    *,
+    rank_property: str,
+    colour_by: str,
+    slice_id: str | None,
+    min_edge_weight: int,
+    seed_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the ``{nodes, edges, stats}`` payload from raw Cypher rows.
+
+    Shared by :func:`fetch_vis_payload` and :func:`fetch_ego_payload`.
+    When ``seed_id`` is supplied, the matching node is highlighted with a
+    distinctive border so the user can find it on the canvas.
+    """
+    max_rank = 0.0
+    for r in node_rows:
+        rank_val = float(r.get(rank_property, 0.0) or 0.0)
+        if rank_val > max_rank:
+            max_rank = rank_val
+
+    palette_size = len(_COMMUNITY_COLOURS)
+    nodes: list[dict[str, Any]] = []
+    for r in node_rows:
+        nid = str(r["id"])
+        community = int(r["community"])
+        source_type = r["source_type"]
+        rank_val = float(r.get(rank_property, 0.0) or 0.0)
+
+        if colour_by == "source":
+            colour = _SOURCE_COLOURS.get(source_type, _SOURCE_COLOURS["unknown"])
+        else:
+            colour = (
+                _COMMUNITY_COLOURS[community % palette_size]
+                if community >= 0
+                else "#cccccc"
+            )
+
+        scaled = (rank_val / max_rank) if max_rank > 0 else 0.0
+        size_value = 8 + 52 * scaled
+
+        title_text = _node_tooltip_text(
+            label=r["label"] or nid,
+            concept_type=r["concept_type"],
+            source_type=source_type,
+            frequency=int(r["frequency"]),
+            pagerank=float(r["pagerank"]),
+            betweenness=float(r["betweenness"]),
+            degree=float(r["degree"]),
+            community=community,
+            rank_property=rank_property,
+            rank_val=rank_val,
+            max_rank=max_rank,
+            colour_by=colour_by,
+        )
+
+        node_dict: dict[str, Any] = {
+            "id": nid,
+            "label": _short_label(r["label"] or nid, 28),
+            "title": title_text,
+            "value": size_value,
+            "color": colour,
+            "group": community if community >= 0 else None,
+            "shape": "dot",
+            "font": {"size": 12, "face": "Inter, system-ui, sans-serif"},
+            "raw": {
+                "label": r["label"] or nid,
+                "source_type": source_type,
+                "concept_type": r["concept_type"],
+                "frequency": int(r["frequency"]),
+                "pagerank": float(r["pagerank"]),
+                "betweenness": float(r["betweenness"]),
+                "community": community,
+            },
+        }
+        if seed_id is not None and nid == seed_id:
+            node_dict["color"] = {
+                "background": colour,
+                "border": "#ff7f0e",
+                "highlight": {"background": colour, "border": "#ff7f0e"},
+            }
+            node_dict["borderWidth"] = 4
+            node_dict["borderWidthSelected"] = 6
+            node_dict["font"] = {"size": 14, "face": "Inter, system-ui, sans-serif", "bold": True}
+        nodes.append(node_dict)
 
     edges: list[dict[str, Any]] = []
     max_weight = max((float(r["weight"] or 1.0) for r in edge_rows), default=1.0)
@@ -265,12 +463,6 @@ def fetch_vis_payload(
         "colour_by": colour_by,
         "slice_id": slice_id,
     }
-    logger.info(
-        "fetch_vis_payload: %d nodes / %d edges (source_label=%s, top_n=%d, "
-        "rank=%s, min_edge_weight=%s, slice=%s)",
-        len(nodes), len(edges),
-        source_label, top_n, rank_property, min_edge_weight, slice_id,
-    )
     return {"nodes": nodes, "edges": edges, "stats": stats}
 
 

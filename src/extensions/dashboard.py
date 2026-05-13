@@ -139,6 +139,114 @@ def _load_vis_payload(
 
 
 @st.cache_data(ttl=120, show_spinner=False)
+def _load_ego_payload(
+    source_key: str,
+    seed_id: str,
+    depth: int,
+    neighbour_limit: int,
+    min_edge_weight: int,
+    slice_id: str | None,
+    colour_by: str,
+) -> dict:
+    """Cypher → ego-graph vis-network payload, cached on the user-visible knobs."""
+    store = _open_store()
+    from src.visualisation.cypher_to_vis_json import fetch_ego_payload
+
+    return fetch_ego_payload(
+        store,
+        source_key,
+        seed_id=seed_id,
+        depth=depth,
+        neighbour_limit=neighbour_limit,
+        min_edge_weight=min_edge_weight,
+        slice_id=slice_id,
+        colour_by=colour_by,
+    )
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _search_concepts(
+    source_key: str,
+    query: str,
+    slice_id: str | None,
+    limit: int = 20,
+) -> list[dict]:
+    """Return concepts whose label matches the keyword (case-insensitive).
+
+    Ordered by exact match first, then ``frequency`` desc, then
+    ``pagerank`` desc — so the best candidate sits at the top of the
+    picker even when many labels contain the query substring.
+    """
+    if not query or not query.strip():
+        return []
+    store = _open_store()
+    needle = query.strip().lower()
+    slice_filter = " AND c.slice_id = $sid" if slice_id is not None else ""
+    cypher = (
+        "MATCH (c:Concept) "
+        "WHERE c.source_label = $sl "
+        "  AND toLower(c.label) CONTAINS $q"
+        + slice_filter
+        + " RETURN c.id AS id, c.label AS label, "
+        "        coalesce(c.frequency, 0)    AS frequency, "
+        "        coalesce(c.pagerank, 0.0)   AS pagerank, "
+        "        coalesce(c.betweenness, 0.0) AS betweenness, "
+        "        coalesce(c.degree, 0.0)     AS degree, "
+        "        coalesce(c.community, -1)   AS community, "
+        "        coalesce(c.source_type, 'unknown') AS source_type, "
+        "        (toLower(c.label) = $q) AS exact "
+        " ORDER BY exact DESC, frequency DESC, pagerank DESC "
+        " LIMIT $lim"
+    )
+    params: dict = {"sl": source_key, "q": needle, "lim": int(limit)}
+    if slice_id is not None:
+        params["sid"] = slice_id
+    with store.session() as s:
+        return [dict(r) for r in s.run(cypher, **params)]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _load_concept_rank_stats(
+    source_key: str,
+    seed_id: str,
+    slice_id: str | None,
+) -> dict:
+    """Return PageRank / betweenness / degree **ranks** for a concept.
+
+    Ranks are 1-based across the whole scoped source (and optional slice),
+    so a small rank number means "near the top". Cheap single Cypher
+    call; cached for 120 s.
+    """
+    store = _open_store()
+    me_slice = " AND me.slice_id = $sid" if slice_id is not None else ""
+    n_slice = " AND n.slice_id = $sid" if slice_id is not None else ""
+    cypher = (
+        "MATCH (me:Concept {id: $id, source_label: $sl}) "
+        "WHERE 1=1" + me_slice + " "
+        "WITH me, coalesce(me.pagerank, 0.0) AS pr, "
+        "        coalesce(me.betweenness, 0.0) AS bt, "
+        "        coalesce(me.degree, 0.0) AS dg "
+        "MATCH (n:Concept) "
+        "WHERE n.source_label = $sl" + n_slice + " "
+        "WITH me, pr, bt, dg, "
+        "     sum(CASE WHEN coalesce(n.pagerank, 0.0) > pr THEN 1 ELSE 0 END) AS pr_above, "
+        "     sum(CASE WHEN coalesce(n.betweenness, 0.0) > bt THEN 1 ELSE 0 END) AS bt_above, "
+        "     sum(CASE WHEN coalesce(n.degree, 0.0) > dg THEN 1 ELSE 0 END) AS dg_above, "
+        "     count(n) AS total "
+        "RETURN pr_above + 1 AS pr_rank, "
+        "       bt_above + 1 AS bt_rank, "
+        "       dg_above + 1 AS dg_rank, "
+        "       total, pr, bt, dg"
+    )
+    params: dict = {"id": seed_id, "sl": source_key}
+    if slice_id is not None:
+        params["sid"] = slice_id
+    with store.session() as s:
+        rec = s.run(cypher, **params).single()
+    return dict(rec) if rec else {}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
 def _list_slice_ids(source_key: str) -> list[str]:
     """Return existing ``slice_id`` values for a source (for the slice picker)."""
     store = _open_store()
@@ -986,28 +1094,271 @@ def main():
             key="net_physics",
         )
 
-        try:
-            payload = _load_vis_payload(
-                source_key,
-                net_top_n,
-                rank_property,
-                min_edge_weight,
-                slice_id,
-                colour_by,
+        # ── Keyword / concept search ─────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 🔎 Search the network by keyword or concept")
+            st.caption(
+                "Type a concept label (or any keyword that appears in one). "
+                "We fetch the **ego graph** around the match plus a side "
+                "panel of stats and neighbours. Leave empty to keep the "
+                "Top-N view above."
             )
-        except Exception as e:
-            st.error(f"Failed to fetch vis payload: {e}")
-            payload = {"nodes": [], "edges": [], "stats": {}}
+            s1, s2, s3 = st.columns([3, 1, 1])
+            with s1:
+                search_q = st.text_input(
+                    "Keyword or concept",
+                    placeholder="e.g. resilience, food, climate change",
+                    key="net_search_q",
+                    label_visibility="collapsed",
+                )
+            with s2:
+                ego_depth = st.selectbox(
+                    "Hops",
+                    [1, 2],
+                    index=0,
+                    key="net_ego_depth",
+                    help=(
+                        "1 = direct neighbours of the match. 2 = also "
+                        "include neighbours-of-neighbours."
+                    ),
+                )
+            with s3:
+                ego_per_hop = st.slider(
+                    "Per hop",
+                    5, 60, value=20, step=5,
+                    key="net_ego_per_hop",
+                    help=(
+                        "Cap on **new** nodes added per hop, picked by "
+                        "edge weight. Total ego size ≤ 1 + hops × per-hop."
+                    ),
+                )
+
+        search_q_clean = (search_q or "").strip()
+        search_mode = bool(search_q_clean)
+
+        if search_mode:
+            try:
+                hits = _search_concepts(
+                    source_key, search_q_clean, slice_id, limit=20,
+                )
+            except Exception as e:
+                hits = []
+                st.error(f"Search failed: {e}")
+
+            if not hits:
+                st.warning(
+                    f"No concept matches '{search_q_clean}'. Try a "
+                    "different spelling, broaden the slice, or clear the "
+                    "search box to see the Top-N view."
+                )
+                payload = {"nodes": [], "edges": [], "stats": {}}
+            else:
+                if len(hits) > 1:
+                    pick_idx = st.selectbox(
+                        f"Pick a match ({len(hits)} candidates):",
+                        options=list(range(len(hits))),
+                        index=0,
+                        format_func=lambda i: (
+                            f"{hits[i]['label']}  "
+                            f"(freq={int(hits[i]['frequency'])}, "
+                            f"PR={float(hits[i]['pagerank']):.3f}, "
+                            f"community={int(hits[i]['community'])})"
+                        ),
+                        key="net_search_pick",
+                    )
+                    seed = hits[pick_idx]
+                else:
+                    seed = hits[0]
+                    st.caption(
+                        f"Matched concept: **{seed['label']}** "
+                        f"(freq={int(seed['frequency'])}, "
+                        f"community={int(seed['community'])})"
+                    )
+
+                try:
+                    payload = _load_ego_payload(
+                        source_key,
+                        seed["id"],
+                        int(ego_depth),
+                        int(ego_per_hop),
+                        min_edge_weight,
+                        slice_id,
+                        colour_by,
+                    )
+                except Exception as e:
+                    st.error(f"Failed to build ego graph: {e}")
+                    payload = {"nodes": [], "edges": [], "stats": {}}
+
+                # ── Insight side panel ──────────────────────────────
+                with st.container(border=True):
+                    st.markdown(f"### 💡 Insights for **{seed['label']}**")
+
+                    try:
+                        rank_stats = _load_concept_rank_stats(
+                            source_key, seed["id"], slice_id,
+                        )
+                    except Exception:
+                        rank_stats = {}
+
+                    total = int(rank_stats.get("total") or 0)
+                    cols_m = st.columns(4)
+                    with cols_m[0]:
+                        st.metric(
+                            "Community",
+                            (
+                                f"#{int(seed['community'])}"
+                                if int(seed["community"]) >= 0
+                                else "—"
+                            ),
+                        )
+                    with cols_m[1]:
+                        pr_rank = rank_stats.get("pr_rank")
+                        st.metric(
+                            "PageRank rank",
+                            (
+                                f"#{int(pr_rank)} / {total}"
+                                if pr_rank and total
+                                else "—"
+                            ),
+                            help=f"PageRank value: {float(seed['pagerank']):.4f}",
+                        )
+                    with cols_m[2]:
+                        bt_rank = rank_stats.get("bt_rank")
+                        st.metric(
+                            "Betweenness rank",
+                            (
+                                f"#{int(bt_rank)} / {total}"
+                                if bt_rank and total
+                                else "—"
+                            ),
+                            help=f"Betweenness value: {float(seed['betweenness']):.4f}",
+                        )
+                    with cols_m[3]:
+                        dg_rank = rank_stats.get("dg_rank")
+                        st.metric(
+                            "Degree rank",
+                            (
+                                f"#{int(dg_rank)} / {total}"
+                                if dg_rank and total
+                                else "—"
+                            ),
+                            help=f"Degree (weighted): {float(seed['degree']):.2f}",
+                        )
+
+                    nodes_in_ego = payload.get("nodes") or []
+                    edges_in_ego = payload.get("edges") or []
+                    communities_reached = sorted({
+                        int(n["raw"]["community"])
+                        for n in nodes_in_ego
+                        if int(n["raw"].get("community", -1)) >= 0
+                        and n["id"] != seed["id"]
+                    })
+
+                    summary_lines = [
+                        f"- **Source type:** {seed['source_type']}",
+                        f"- **Mentions in corpus:** {int(seed['frequency'])}",
+                        f"- **Ego graph size:** {len(nodes_in_ego)} concepts, "
+                        f"{len(edges_in_ego)} relationships "
+                        f"(depth={int(ego_depth)}, per-hop={int(ego_per_hop)}).",
+                        f"- **Communities reached by ego:** "
+                        + (
+                            ", ".join(f"#{c}" for c in communities_reached)
+                            if communities_reached
+                            else "none"
+                        ),
+                    ]
+                    if int(seed["community"]) >= 0:
+                        summary_lines.append(
+                            "- Click the **Communities** tab and search for "
+                            f"community **#{int(seed['community'])}** to see "
+                            "the rest of this concept's home cluster."
+                        )
+                    st.markdown("\n".join(summary_lines))
+
+                    # ── Direct neighbours table ─────────────────────
+                    if edges_in_ego:
+                        nbr_rows: list[dict] = []
+                        label_by_id = {
+                            n["id"]: n["raw"]["label"] for n in nodes_in_ego
+                        }
+                        community_by_id = {
+                            n["id"]: int(n["raw"].get("community", -1))
+                            for n in nodes_in_ego
+                        }
+                        seed_id_key = seed["id"]
+                        for e in edges_in_ego:
+                            if e["from"] != seed_id_key and e["to"] != seed_id_key:
+                                continue
+                            if e["from"] == seed_id_key:
+                                other_id = e["to"]
+                                direction = "→"
+                            else:
+                                other_id = e["from"]
+                                direction = "←"
+                            nbr_rows.append({
+                                "direction": direction,
+                                "neighbour": label_by_id.get(other_id, other_id),
+                                "community": community_by_id.get(other_id, -1),
+                                "weight": float(e["raw"].get("weight") or 0.0),
+                                "top_verb": e["raw"].get("top_verb") or "",
+                                "types": e["raw"].get("types") or "",
+                                "sentiment": e["raw"].get("sentiment"),
+                            })
+                        if nbr_rows:
+                            nbr_df = pd.DataFrame(nbr_rows).sort_values(
+                                "weight", ascending=False,
+                            )
+                            st.markdown("**Direct neighbours**")
+                            st.dataframe(
+                                nbr_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "weight": st.column_config.NumberColumn(
+                                        "Weight", format="%.1f",
+                                    ),
+                                    "sentiment": st.column_config.NumberColumn(
+                                        "Sentiment", format="%+.2f",
+                                    ),
+                                    "community": st.column_config.NumberColumn(
+                                        "Comm", format="%d",
+                                    ),
+                                },
+                            )
+        else:
+            try:
+                payload = _load_vis_payload(
+                    source_key,
+                    net_top_n,
+                    rank_property,
+                    min_edge_weight,
+                    slice_id,
+                    colour_by,
+                )
+            except Exception as e:
+                st.error(f"Failed to fetch vis payload: {e}")
+                payload = {"nodes": [], "edges": [], "stats": {}}
 
         n_nodes = len(payload.get("nodes", []))
         n_edges = len(payload.get("edges", []))
-        st.caption(
-            f"Showing **{n_nodes}** nodes and **{n_edges}** edges "
-            f"(rank=`{rank_property}`, min weight={min_edge_weight}, "
-            f"colour=`{colour_by}`"
-            + (f", slice=`{slice_id}`" if slice_id else "")
-            + ")."
-        )
+        if search_mode and n_nodes > 0:
+            seed_label = locals().get("seed", {}).get("label", search_q_clean)
+            st.caption(
+                f"Showing the **ego graph** around **{seed_label}** — "
+                f"{n_nodes} nodes, {n_edges} edges "
+                f"(depth={int(ego_depth)}, per-hop={int(ego_per_hop)}, "
+                f"min weight={min_edge_weight}, colour=`{colour_by}`"
+                + (f", slice=`{slice_id}`" if slice_id else "")
+                + "). Clear the search box above to return to the Top-N view."
+            )
+        else:
+            st.caption(
+                f"Showing **{n_nodes}** nodes and **{n_edges}** edges "
+                f"(rank=`{rank_property}`, min weight={min_edge_weight}, "
+                f"colour=`{colour_by}`"
+                + (f", slice=`{slice_id}`" if slice_id else "")
+                + ")."
+            )
         vs_stats = payload.get("stats") or {}
         if n_nodes > 0 and vs_stats:
             z1, z2, z3, z4 = st.columns(4)
